@@ -58,6 +58,26 @@ async def add_ingredient(name: str, price: float, m_id: str):
     response = supabase.table("ingredient_costs").insert(data).execute()
     return {"status": "success", "data": response.data}
 
+@app.post("/add-menu-item")
+async def add_menu_item(merchant_id: str, item_name: str, original_price: float):
+
+    data = {
+        "merchant_id": merchant_id,
+        "item_name": item_name,
+        "original_price": original_price,
+        "is_active": True 
+    }
+    
+    try:
+        response = supabase.table("menu_items").insert(data).execute()
+        return {
+            "status": "success", 
+            "message": f"Successfully added dish: {item_name} (RM {original_price})", 
+            "data": response.data
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 
 @app.post("/upload-receipt/{merchant_id}")
 async def upload_receipt(merchant_id: str, file: UploadFile = File(...)):
@@ -132,7 +152,7 @@ async def analyze_surroundings(merchant_id: str, lat: float, lon: float):
     return {"merchant_id": merchant_id, "school_context": schools, "note": message}
     
 @app.get("/get-ai-decision-package/{merchant_id}")
-async def get_package(merchant_id: str, address: str, background_tasks: BackgroundTasks): # 2. 这里加上参数
+async def get_package(merchant_id: str, address: str, background_tasks: BackgroundTasks):
     
     background_tasks.add_task(check_and_notify_costs, merchant_id)
     
@@ -143,19 +163,37 @@ async def get_package(merchant_id: str, address: str, background_tasks: Backgrou
     weather = get_weather_context(lat, lon)
     traffic = get_traffic_context(lat, lon)
     schools = get_nearby_schools(lat, lon)
+    
+    menu_res = supabase.table("menu_items") \
+        .select("id, item_name, original_price") \
+        .eq("merchant_id", merchant_id) \
+        .eq("is_active", True) \
+        .execute()
+    menu_data = menu_res.data
 
-    return {
+# Retrieve Sales History for the Last 7 Days
+# We linked the menu_items table so that the AI ​​can directly see the dish name instead of the ID.
+    sales_res = supabase.table("sales_logs") \
+        .select("quantity_sold, log_date, menu_items(item_name)") \
+        .eq("merchant_id", merchant_id) \
+        .order("log_date", desc=True) \
+        .limit(70) \
+        .execute()
+    sales_history = sales_res.data
+
+    context_package = {
         "merchant_id": merchant_id,
-        "environment": {
+        "timestamp": datetime.now().isoformat(),
+        "environmental_context": {
             "weather": weather,
             "traffic": traffic,
-            "schools": schools
+            "nearby_schools": schools
         },
-        "timestamp": datetime.now().isoformat()
+        "business_context": {
+            "menu": menu_data,
+            "recent_sales_performance": sales_history
+        }
     }
-
-    # Send this to your friend's Multi-Agent Debate module
-    # response = requests.post(AI_API, json=context_package)
     return context_package
 
 
