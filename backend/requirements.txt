@@ -6,3 +6,6 @@ python-dotenv
 requests
 python-multipart
 zhipuai
+streamlit
+pandas
+PyMuPDF

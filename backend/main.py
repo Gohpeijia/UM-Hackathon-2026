@@ -1,7 +1,10 @@
 import os
-import uuid
+import csv
+import io
 import requests
-from fastapi import FastAPI, UploadFile, File
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from fastapi import BackgroundTasks
@@ -10,7 +13,13 @@ from datetime import datetime
 load_dotenv()
 app = FastAPI()
 
-AI_SERVICE_URL = "http://urfriendPC:8001/analyze" #junbin must place AI interface address here
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"], # Specifically allow your React frontend
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # connect Supabase
 url: str = os.environ.get("SUPABASE_URL")
@@ -79,56 +88,179 @@ async def add_menu_item(merchant_id: str, item_name: str, original_price: float)
         return {"status": "error", "message": str(e)}
 
 
-@app.post("/upload-receipt/{merchant_id}")
-async def upload_receipt(merchant_id: str, file: UploadFile = File(...)):
-    # create file and prevent same
-    file_extension = file.filename.split(".")[-1]
-    file_name = f"{uuid.uuid4()}.{file_extension}"
-    file_path = f"{merchant_id}/{file_name}"
+@app.post("/upload-sales-logs-csv")
+async def upload_sales_logs_csv(merchant_id: str = Form(...), file: UploadFile = File(...)):
+    if not merchant_id.strip():
+        raise HTTPException(status_code=400, detail="merchant_id is required")
 
-    # read the file and upload to Supabase Storage
-    contents = await file.read()
-    supabase.storage.from_("receipts").upload(file_path, contents)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="CSV file is required")
 
-    # get the public URL from pic (send to teammate taht handle AI part)
-    image_url = supabase.storage.from_("receipts").get_public_url(file_path)
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only .csv files are supported")
 
-    # 2. simultate AI connect (Z AI GLM logic)
-    # In a real-world scenario, use `requests.post(AI_API_URL, json={"url": image_url})`
-    # simulate the JSON result returned by the AI.
-    mock_ai_result = [
-        {"item": "Chicken Breast", "price": 15.50},
-        {"item": "Cooking Oil", "price": 45.00}
-    ]
+    raw_bytes = await file.read()
+    if not raw_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    # Feed the link to AI through API
-    payload = {"receipt_url": image_url}
-    
     try:
-        # Send a POST request to the AI ​​interface
-        response = requests.post(AI_SERVICE_URL, json=payload)
-        
-        # Get the JSON result analysis by AI
-        ai_data = response.json()
+        csv_text = raw_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8 encoded")
 
-        # 3. store analysis results in database
-        saved_items = []
-        for entry in mock_ai_result:
-            data = {
-                "merchant_id": merchant_id,
-                "item_name": entry["item"],
-                "price_per_unit": entry["price"]
-            }
-            res = supabase.table("ingredient_costs").insert(data).execute()
-            saved_items.append(res.data)
+    reader = csv.DictReader(io.StringIO(csv_text))
+    required_columns = ["order_id", "date", "time", "item_name", "quantity", "unit_price"]
 
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV header row is missing")
+
+    normalized_headers = [h.strip() if isinstance(h, str) else h for h in reader.fieldnames]
+    missing_columns = [col for col in required_columns if col not in normalized_headers]
+    if missing_columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required CSV columns: {', '.join(missing_columns)}",
+        )
+
+    valid_rows = []
+    invalid_rows = []
+    seen_in_file = set()
+    duplicate_in_file_count = 0
+
+    for row_index, row in enumerate(reader, start=2):
+        row = {(k.strip() if isinstance(k, str) else k): v for k, v in row.items()}
+
+        if not any((value or "").strip() for value in row.values() if isinstance(value, str)):
+            continue
+
+        try:
+            order_id_raw = (row.get("order_id") or "").strip()
+            order_id = order_id_raw if order_id_raw else None
+
+            date_raw = (row.get("date") or "").strip()
+            log_date = datetime.strptime(date_raw, "%d/%m/%Y").date().isoformat()
+
+            time_raw = (row.get("time") or "").strip()
+            try:
+                log_time = datetime.strptime(time_raw, "%H:%M").time().strftime("%H:%M:%S")
+            except ValueError:
+                log_time = datetime.strptime(time_raw, "%H:%M:%S").time().strftime("%H:%M:%S")
+
+            item_name = (row.get("item_name") or "").strip()
+            if not item_name:
+                raise ValueError("item_name is required")
+
+            quantity_raw = (row.get("quantity") or "").strip()
+            quantity = int(quantity_raw)
+            if quantity < 0:
+                raise ValueError("quantity must be >= 0")
+
+            unit_price_raw = (row.get("unit_price") or "").strip()
+            unit_price = Decimal(unit_price_raw).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            dedupe_key = (
+                merchant_id,
+                order_id or "",
+                log_date,
+                log_time,
+                item_name,
+                quantity,
+                str(unit_price),
+            )
+            if dedupe_key in seen_in_file:
+                duplicate_in_file_count += 1
+                continue
+            seen_in_file.add(dedupe_key)
+
+            valid_rows.append(
+                {
+                    "merchant_id": merchant_id,
+                    "order_id": order_id,
+                    "log_date": log_date,
+                    "log_time": log_time,
+                    "item_name": item_name,
+                    "quantity": quantity,
+                    "unit_price": float(unit_price),
+                }
+            )
+
+        except (ValueError, InvalidOperation) as exc:
+            invalid_rows.append({"line": row_index, "reason": str(exc)})
+
+    if not valid_rows:
         return {
-            "status": "Success",
-            "image_url": image_url,
-            "parsed_data": saved_items
+            "success": False,
+            "message": "No valid rows to insert",
+            "inserted_rows": 0,
+            "invalid_rows": len(invalid_rows),
+            "duplicate_rows_in_file": duplicate_in_file_count,
+            "errors": invalid_rows[:20],
         }
-    except Exception as e:
-            return {"error": "Fail connect to AI service", "details": str(e)}
+
+    min_date = min(r["log_date"] for r in valid_rows)
+    max_date = max(r["log_date"] for r in valid_rows)
+
+    existing_result = (
+        supabase.table("sales_logs")
+        .select("order_id, log_date, log_time, item_name, quantity, unit_price")
+        .eq("merchant_id", merchant_id)
+        .gte("log_date", min_date)
+        .lte("log_date", max_date)
+        .execute()
+    )
+    existing_rows = existing_result.data or []
+
+    existing_keys = set()
+    for existing in existing_rows:
+        existing_keys.add(
+            (
+                merchant_id,
+                (existing.get("order_id") or ""),
+                str(existing.get("log_date") or ""),
+                str(existing.get("log_time") or ""),
+                str(existing.get("item_name") or ""),
+                int(existing.get("quantity") or 0),
+                str(Decimal(str(existing.get("unit_price") or 0)).quantize(Decimal("0.01"))),
+            )
+        )
+
+    rows_to_insert = []
+    duplicate_existing_count = 0
+    for row in valid_rows:
+        row_key = (
+            merchant_id,
+            row.get("order_id") or "",
+            row["log_date"],
+            row["log_time"],
+            row["item_name"],
+            int(row["quantity"]),
+            str(Decimal(str(row["unit_price"])).quantize(Decimal("0.01"))),
+        )
+        if row_key in existing_keys:
+            duplicate_existing_count += 1
+            continue
+        rows_to_insert.append(row)
+
+    inserted_rows = 0
+    if rows_to_insert:
+        batch_size = 500
+        for start in range(0, len(rows_to_insert), batch_size):
+            batch = rows_to_insert[start : start + batch_size]
+            supabase.table("sales_logs").insert(batch).execute()
+            inserted_rows += len(batch)
+
+    return {
+        "success": True,
+        "message": "CSV processed",
+        "total_rows_read": len(valid_rows) + len(invalid_rows) + duplicate_in_file_count,
+        "valid_rows": len(valid_rows),
+        "inserted_rows": inserted_rows,
+        "duplicate_rows_in_file": duplicate_in_file_count,
+        "duplicate_rows_existing": duplicate_existing_count,
+        "invalid_rows": len(invalid_rows),
+        "errors": invalid_rows[:20],
+    }
+
 
 @app.get("/analyze-surroundings/{merchant_id}")
 async def analyze_surroundings(merchant_id: str, lat: float, lon: float):
