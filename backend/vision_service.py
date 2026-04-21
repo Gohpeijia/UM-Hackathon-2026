@@ -641,8 +641,21 @@ def _fetch_diagnostic_patterns(supabase: Client, merchant_id: str, target_month:
         raise HTTPException(status_code=404, detail="No monthly summary found for merchant and target_month")
 
     diagnostic = res.data[0].get("diagnostic_patterns")
+    
+    # --- 🚀 NEW AUTO-COMPUTE LOGIC 🚀 ---
     if not isinstance(diagnostic, dict):
-        raise HTTPException(status_code=422, detail="diagnostic_patterns is missing. Run diagnostics first.")
+        print(f"⚡ [Auto-Compute] Diagnostics missing for {target_month}. Crunching data now...")
+        
+        # Import the math engine directly from your agent_tools file
+        from agent_tools import analyze_sales_patterns
+        
+        # Figure out the baseline month
+        baseline_month = _get_previous_month(target_month)
+        
+        # Run the math engine (this also saves it to Supabase automatically!)
+        diagnostic = analyze_sales_patterns(merchant_id, baseline_month, target_month)
+        print("✅ [Auto-Compute] Math complete and saved to database.")
+    # ------------------------------------
 
     return diagnostic
 
@@ -920,8 +933,13 @@ def _analyst_synthesis_prompt(
 ) -> Tuple[str, str]:
     system_prompt = (
         "You are an expert F&B Analyst. Evidence-first reasoning is mandatory. "
-        "You MUST use external findings as support, not replacement truth. "
-        "Use all required tools and state uncertainty where tools are weak."
+        "You have been provided with internal sales diagnostics, Boss context, and 4 specific external data signals. "
+        "You MUST map the external signals to the internal data using these strict guidelines:\n"
+        "1. Weather (OpenWeather): Cross-reference rain or extreme heat with drops in specific time-of-day traffic or cold/hot beverage shifts.\n"
+        "2. Competitors (Places): Check if the nearby_food_venue_count or specific high-rated competitors explain a sudden drop in Order Volume.\n"
+        "3. Local Events (Web/Serper): Look for local promotions, road closures, or Reddit chatter that aligns with the Boss's answers.\n"
+        "4. Macro News (GNews): Look for official holidays, university breaks, or economic news that explains macro shifts.\n\n"
+        "You MUST use these external findings as support for the internal data, not as replacement truth. State uncertainty where tools are weak."
     )
     user_prompt = (
         f"Target month: {target_month}\n"
