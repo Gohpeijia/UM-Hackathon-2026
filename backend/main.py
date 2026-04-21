@@ -2,13 +2,14 @@ import os
 import csv
 import io
 import requests
+import pandas as pd
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from fastapi import BackgroundTasks
-from datetime import datetime
 
 load_dotenv()
 app = FastAPI()
@@ -283,6 +284,74 @@ async def analyze_surroundings(merchant_id: str, lat: float, lon: float):
     # It includes the specific ID, the raw data, and our generated summary note.
     return {"merchant_id": merchant_id, "school_context": schools, "note": message}
     
+
+def analyze_sales_trends(merchant_id: str) -> list:
+    # 1. Fetch raw data from Supabase (fetching last 7 days for this Hackathon demo)
+    response = supabase.table("sales_logs") \
+        .select("quantity_sold, log_date, menu_items(item_name)") \
+        .eq("merchant_id", merchant_id) \
+        .order("log_date", desc=True) \
+        .execute()
+    
+    raw_data = response.data
+    
+    if not raw_data:
+        return ["No data available for analysis."]
+
+    # 2. Flatten the data for Pandas DataFrame
+    # Supabase returns nested JSON, we need to extract 'item_name' cleanly
+    flat_data = []
+    for row in raw_data:
+        flat_data.append({
+            "date": row["log_date"],
+            "item_name": row["menu_items"]["item_name"],
+            "quantity": row["quantity_sold"]
+        })
+
+    # 3. Load data into a Pandas DataFrame and convert string dates to Datetime objects
+    df = pd.DataFrame(flat_data)
+    df['date'] = pd.to_datetime(df['date'])
+
+    # 4. Define Time Periods
+    # For this Hackathon demo (since we only seeded 7 days of data), 
+    # we will compare "Recent 3 Days" vs "Previous 3 Days".
+    # Note: In production, change 'days=3' to 'days=7' for WoW (Week-over-Week) 
+    # or 'days=30' for MoM (Month-over-Month).
+    today = datetime.now()
+    period_end = today
+    period_mid = today - timedelta(days=3)
+    period_start = today - timedelta(days=6)
+
+    # 5. Split DataFrame into two timeframes
+    recent_df = df[(df['date'] > period_mid) & (df['date'] <= period_end)]
+    previous_df = df[(df['date'] > period_start) & (df['date'] <= period_mid)]
+
+    # 6. Group by item_name and sum the quantities
+    recent_agg = recent_df.groupby('item_name')['quantity'].sum()
+    previous_agg = previous_df.groupby('item_name')['quantity'].sum()
+
+    # 7. Calculate Percentage Change and generate AI insights
+    insights = []
+    for item in recent_agg.index:
+        recent_qty = recent_agg[item]
+        prev_qty = previous_agg.get(item, 0) # Use 0 if item wasn't sold previously
+        
+        if prev_qty > 0:
+            # Formula: ((New - Old) / Old) * 100
+            change_pct = ((recent_qty - prev_qty) / prev_qty) * 100
+            
+            # 8. Filter for significant changes (e.g., more than 20% drop or spike)
+            if change_pct <= -20:
+                insights.append(f"CRITICAL DROP: {item} sales dropped by {abs(change_pct):.0f}% compared to the previous period.")
+            elif change_pct >= 20:
+                insights.append(f"SPIKE: {item} sales increased by {change_pct:.0f}%. Keep it up!")
+
+    # If everything is stable (between -20% and 20%)
+    if not insights:
+        return ["All sales are relatively stable. No drastic fluctuations detected."]
+    
+    return insights
+
 @app.get("/get-ai-decision-package/{merchant_id}")
 async def get_package(merchant_id: str, address: str, background_tasks: BackgroundTasks):
     
@@ -296,6 +365,8 @@ async def get_package(merchant_id: str, address: str, background_tasks: Backgrou
     traffic = get_traffic_context(lat, lon)
     schools = get_nearby_schools(lat, lon)
     
+    sales_insights = analyze_sales_trends(merchant_id)
+
     menu_res = supabase.table("menu_items") \
         .select("id, item_name, original_price") \
         .eq("merchant_id", merchant_id) \
@@ -323,7 +394,7 @@ async def get_package(merchant_id: str, address: str, background_tasks: Backgrou
         },
         "business_context": {
             "menu": menu_data,
-            "recent_sales_performance": sales_history
+            "trend_analysis": sales_insights
         }
     }
     return context_package
