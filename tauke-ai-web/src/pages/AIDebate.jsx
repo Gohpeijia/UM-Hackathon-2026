@@ -14,42 +14,38 @@ const debateItems = [
   {
     role: "Growth Hacker",
     icon: "trending_up",
-    stance: "Aggressive Push",
+    stance: "PROPOSE",
     copy:
-      "Launch a 10-day student combo with limited-time urgency. Demand elasticity is still favorable and can recover top-line quickly.",
-    indicatorLabel: "Impact",
-    indicatorValue: "+18% traffic potential",
-    tone: "up"
+      "I recommend immediate aggressive pricing for the student segment. Data shows high price sensitivity and immediate volume upside.",
+    time: "10:42 AM",
+    tone: "propose"
   },
   {
     role: "Risk Manager",
     icon: "shield",
-    stance: "Margin Protection",
+    stance: "DISAGREE",
     copy:
-      "Price compression beyond 7% may erode unit economics. If promoted, cap discounts by category and enforce daily margin guardrails.",
-    indicatorLabel: "Risk",
-    indicatorValue: "High if uncapped",
-    tone: "down"
+      "Counter-point: This could lead to a 15% margin erosion if operational costs aren\u2019t offset. We need a phased rollout.",
+    time: "10:43 AM",
+    tone: "disagree"
   },
   {
     role: "Competitor Analyst",
     icon: "monitoring",
-    stance: "Differentiated Offer",
+    stance: "AGREE W/ RISK",
     copy:
-      "Primary competitor is discounting drinks only. Bundle speed and reliability into our offer to avoid a direct price war.",
-    indicatorLabel: "Evidence",
-    indicatorValue: "3 nearby campaigns tracked",
-    tone: "neutral"
+      "Agreed with Risk Manager. The Library Coffee just launched a similar loyalty program. We must differentiate on speed, not just price.",
+    time: "10:44 AM",
+    tone: "agree-risk"
   },
   {
     role: "Operations Chief",
     icon: "account_tree",
-    stance: "Phased Rollout",
+    stance: "CAUTION",
     copy:
-      "Run pilot in two high-volume slots first. Operational readiness is moderate, and phased rollout reduces queue and staffing risk.",
-    indicatorLabel: "Readiness",
-    indicatorValue: "82% staffing coverage",
-    tone: "up"
+      "Can we support the volume? F&B staff alignment is currently at 80%. A phased approach gives us time to hire.",
+    time: "10:45 AM",
+    tone: "caution"
   }
 ];
 
@@ -88,74 +84,83 @@ export default function AIDebate() {
 
       <main className="war-room-main">
         <div className="war-room-shell">
+          <div className="utility-row" aria-label="Top utilities">
+            <label className="utility-search" aria-label="Search">
+              <span className="material-symbols-outlined" aria-hidden="true">search</span>
+              <input type="search" placeholder="Search debates, agents, or strategy notes" />
+            </label>
+            <div className="utility-icons">
+              <button type="button" className="utility-icon-btn" aria-label="Notifications">
+                <span className="material-symbols-outlined" aria-hidden="true">notifications</span>
+              </button>
+              <button type="button" className="utility-icon-btn" aria-label="Pinned items">
+                <span className="material-symbols-outlined" aria-hidden="true">push_pin</span>
+              </button>
+              <button type="button" className="utility-icon-btn" aria-label="Settings">
+                <span className="material-symbols-outlined" aria-hidden="true">settings</span>
+              </button>
+            </div>
+          </div>
+
           <header className="war-room-header">
-            <p className="war-room-step">STEP 6 / AI WAR ROOM</p>
-            <h2 className="war-room-title">Strategic Debate</h2>
-            <p className="war-room-subtitle">
-              Multiple AI perspectives are evaluating the strongest next business action before synthesis.
-            </p>
+            <h2 className="war-room-title">AI Agent Debate War Room V2</h2>
+            <p className="war-room-subtitle">Session: Q3 Pricing Strategy Optimization</p>
           </header>
 
           <section className="debate-panel" aria-label="AI debate war room">
-            <div className="debate-panel-header">
-              <div>
-                <p className="debate-panel-kicker">Live Session</p>
-                <h3 className="debate-panel-title">Q3 Recovery Strategy Simulator</h3>
-              </div>
-
-              <div className="debate-status-card" aria-label="Debate status">
-                <p className="status-label">System status</p>
-                <p className="status-value">Evaluating strategic options</p>
-                <div className="status-track" aria-hidden="true">
-                  <div className="status-fill" />
-                </div>
-              </div>
+            <div className="debate-panel-head">
+              <h3 className="debate-panel-title">Live Strategic Debate</h3>
+              <span className="agents-active-badge">4 Agents Active</span>
             </div>
 
             <div className="debate-feed">
-              {debateItems.map((item) => (
-                <article key={item.role} className="agent-card">
-                  <div className="agent-icon-wrap" aria-hidden="true">
-                    <span className="material-symbols-outlined">{item.icon}</span>
-                  </div>
-
-                  <div className="agent-content">
-                    <div className="agent-top-row">
-                      <p className="agent-role">{item.role}</p>
-                      <span className={`stance-pill tone-${item.tone}`}>{item.stance}</span>
+              {debateItems.map((item, index) => (
+                <div
+                  key={item.role}
+                  className={`debate-row-shell ${index % 2 === 0 ? "is-left" : "is-right"}`}
+                >
+                  <article className="debate-row">
+                    <div className="agent-avatar" aria-hidden="true">
+                      <span className="material-symbols-outlined">{item.icon}</span>
                     </div>
 
-                    <p className="agent-copy">{item.copy}</p>
-
-                    <div className="agent-indicator-row">
-                      <span className="indicator-label">{item.indicatorLabel}</span>
-                      <span className={`indicator-value tone-${item.tone}`}>{item.indicatorValue}</span>
+                    <div className="message-group">
+                      <div className="debate-row-header">
+                        <div className="debate-row-top">
+                          <p className="agent-name">{item.role}</p>
+                          <span className={`stance-pill tone-${item.tone}`}>{item.stance}</span>
+                        </div>
+                        <time className="row-time">{item.time}</time>
+                      </div>
+                      <p className="message-bubble">{item.copy}</p>
                     </div>
-                  </div>
-                </article>
+
+                  </article>
+                </div>
               ))}
             </div>
 
-            <div className="debate-actions">
-              <button
-                type="button"
-                className="secondary-action"
-                onClick={() => navigate("/supervisor-clarification")}
-              >
-                Back to Clarification
-              </button>
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => navigate("/final-synthesis")}
-              >
-                <span>Continue to Synthesis</span>
-                <span className="material-symbols-outlined" aria-hidden="true">arrow_forward</span>
-              </button>
+            <div className="consensus-section">
+              <p className="consensus-label">CONSENSUS STRENGTH</p>
+              <div className="consensus-track" aria-hidden="true">
+                <div className="consensus-fill" />
+              </div>
+              <div className="consensus-footer">
+                <p className="consensus-text">Phased rollout emerging as dominant strategy.</p>
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => navigate("/final-synthesis")}
+                >
+                  Proceed to Synthesis <span aria-hidden="true">{"\u2192"}</span>
+                </button>
+              </div>
             </div>
+
           </section>
         </div>
       </main>
     </div>
   );
 }
+

@@ -73,6 +73,11 @@ export default function DataSync() {
                   <strong>Today, 09:41 AM</strong>
                 </div>
               </div>
+
+              <button type="button" className="upload-btn">
+                <span className="material-symbols-outlined" aria-hidden="true">upload_file</span>
+                Upload Missing File
+              </button>
             </article>
 
             <article className="sync-card">
@@ -105,6 +110,11 @@ export default function DataSync() {
                   </span>
                 ))}
               </div>
+
+              <button type="button" className="upload-btn">
+                <span className="material-symbols-outlined" aria-hidden="true">upload_file</span>
+                Upload Missing File
+              </button>
             </article>
 
             <article className="sync-card wide-card">
@@ -118,12 +128,14 @@ export default function DataSync() {
                 </span>
               </div>
 
-              <p className="card-copy">Awaiting March Supplier Ledger. Cannot proceed with cost analysis until the missing file is uploaded.</p>
+              <div className="wide-card-content">
+                <p className="card-copy">Awaiting March Supplier Ledger. Cannot proceed with cost analysis until the missing file is uploaded.</p>
 
-              <button type="button" className="upload-btn">
-                <span className="material-symbols-outlined" aria-hidden="true">upload_file</span>
-                Upload Missing File
-              </button>
+                <button type="button" className="upload-btn">
+                  <span className="material-symbols-outlined" aria-hidden="true">upload_file</span>
+                  Upload Missing File
+                </button>
+              </div>
             </article>
           </section>
 

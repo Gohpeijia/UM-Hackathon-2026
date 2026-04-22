@@ -1,3 +1,4 @@
+import { useState } from "react";
 import "./StoreConfiguration.css";
 
 const mapImage = "https://www.figma.com/api/mcp/asset/64ac90b4-bb3f-4a1b-8208-b65aa12cb3b3";
@@ -16,30 +17,6 @@ const navClarification = "https://www.figma.com/api/mcp/asset/856f7b69-97e6-4b58
 const navWarRoom = "https://www.figma.com/api/mcp/asset/40506338-582e-4125-835d-d5f0aa716040";
 const navStrategy = "https://www.figma.com/api/mcp/asset/a9ceb1e5-3217-4de1-8c99-aadb8ebe9b35";
 
-const audienceRows = [
-	{
-		label: "Local Residents",
-		description: "Primary community base",
-		value: "60%",
-		bar: "60%",
-		color: "#0058bc"
-	},
-	{
-		label: "Office Workers",
-		description: "Weekday lunch & transit",
-		value: "30%",
-		bar: "30%",
-		color: "#006e28"
-	},
-	{
-		label: "Tourists / Visitors",
-		description: "Weekend & seasonal traffic",
-		value: "10%",
-		bar: "10%",
-		color: "#e2241f"
-	}
-];
-
 const navItems = [
 	{ label: "Store Setup", icon: navStore, active: true },
 	{ label: "Data Sync", icon: navSync },
@@ -50,6 +27,60 @@ const navItems = [
 ];
 
 export default function StoreConfiguration() {
+	const [audienceRows, setAudienceRows] = useState([
+		{
+			id: 1,
+			label: "Target Audience 1",
+			description: "Describe this audience segment",
+			allocation: 100,
+			color: "#0058bc"
+		}
+	]);
+	const [nextAudienceId, setNextAudienceId] = useState(2);
+
+	const totalAllocation = audienceRows.reduce((total, row) => total + row.allocation, 0);
+
+	const addAudienceRow = () => {
+		const colorPalette = ["#0058bc", "#006e28", "#e2241f", "#a85000", "#5b2ca0"];
+		const nextIndex = audienceRows.length;
+		setAudienceRows((currentRows) => [
+			...currentRows,
+			{
+				id: nextAudienceId,
+				label: `Target Audience ${nextIndex + 1}`,
+				description: "Describe this audience segment",
+				allocation: 0,
+				color: colorPalette[nextIndex % colorPalette.length]
+			}
+		]);
+		setNextAudienceId((id) => id + 1);
+	};
+
+	const removeAudienceRow = (rowId) => {
+		if (audienceRows.length === 1) {
+			return;
+		}
+		setAudienceRows((currentRows) => currentRows.filter((row) => row.id !== rowId));
+	};
+
+	const updateAudienceRow = (rowId, key, value) => {
+		setAudienceRows((currentRows) =>
+			currentRows.map((row) => {
+				if (row.id !== rowId) {
+					return row;
+				}
+
+				if (key === "allocation") {
+					const parsedValue = Number.parseInt(value, 10);
+					const safeValue = Number.isNaN(parsedValue) ? 0 : Math.max(0, Math.min(100, parsedValue));
+					return { ...row, allocation: safeValue };
+				}
+
+				return { ...row, [key]: value };
+			})
+		);
+	};
+
 	return (
 		<div className="store-config-page">
 			<aside className="store-sidebar">
@@ -153,24 +184,52 @@ export default function StoreConfiguration() {
 									<img className="card-heading-icon" src={audienceIcon} alt="" aria-hidden="true" />
 									<h3>Audience Mix</h3>
 								</div>
-								<span className="allocation-pill">100% Allocated</span>
+								<span className="allocation-pill">{totalAllocation}% Allocated</span>
 							</div>
 
 							<div className="audience-list">
-								{audienceRows.map((row) => (
-									<div className="audience-row" key={row.label}>
+								{audienceRows.map((row, index) => (
+									<div className="audience-row" key={row.id}>
 										<div className="audience-meta">
 											<div className="audience-copy">
-												<h4>{row.label}</h4>
-												<p>{row.description}</p>
+												<input
+													type="text"
+													value={row.label}
+													onChange={(event) => updateAudienceRow(row.id, "label", event.target.value)}
+													aria-label={`Audience ${index + 1} name`}
+												/>
+												<input
+													type="text"
+													value={row.description}
+													onChange={(event) => updateAudienceRow(row.id, "description", event.target.value)}
+													aria-label={`Audience ${index + 1} description`}
+												/>
 											</div>
-											<p className="audience-value">{row.value}</p>
+											<div>
+												<input
+													type="number"
+													min="0"
+													max="100"
+													value={row.allocation}
+													onChange={(event) => updateAudienceRow(row.id, "allocation", event.target.value)}
+													aria-label={`Audience ${index + 1} allocation percentage`}
+												/>
+												<p className="audience-value">{row.allocation}%</p>
+											</div>
 										</div>
 										<div className="progress-track" aria-hidden="true">
-											<div className="progress-fill" style={{ width: row.bar, backgroundColor: row.color }} />
+											<div className="progress-fill" style={{ width: `${row.allocation}%`, backgroundColor: row.color }} />
 										</div>
+										<button
+											type="button"
+											onClick={() => removeAudienceRow(row.id)}
+											disabled={audienceRows.length === 1}
+										>
+											Remove Row
+										</button>
 									</div>
 								))}
+								<button type="button" onClick={addAudienceRow}>Add Target Audience</button>
 							</div>
 						</article>
 

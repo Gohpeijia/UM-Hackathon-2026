@@ -6,7 +6,7 @@
 }
 
 .data-sync-page {
-    min-height: 100vh;
+    min-height: 0;
     background: #f4f6fa;
     color: #1b1f2a;
     font-family: "Inter", sans-serif;
@@ -94,17 +94,17 @@
 .data-sync-main {
     width: calc(100% - 220px);
     margin-left: 220px;
-    padding: 30px 22px 24px;
+    padding: 16px 16px 6px;
 }
 
 .data-sync-shell {
     width: 100%;
-    max-width: 1040px;
+    max-width: 860px;
     margin: 0 auto;
 }
 
 .page-header {
-    margin-bottom: 18px;
+    margin-bottom: 12px;
 }
 
 .page-title {
@@ -117,28 +117,33 @@
 }
 
 .page-subtitle {
-    margin: 10px 0 0;
+    margin: 6px 0 0;
     max-width: 620px;
     color: #677286;
-    font-size: 15px;
-    line-height: 1.55;
+    font-size: 14px;
+    line-height: 1.45;
 }
 
 .data-sync-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
+    gap: 10px;
+    align-items: stretch;
 }
 
 .sync-card {
     background: #ffffff;
     border: 1px solid #eaedf3;
-    border-radius: 26px;
+    border-radius: 22px;
     box-shadow: 0 6px 20px rgba(20, 34, 56, 0.06);
-    padding: 18px;
+    padding: 14px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
+}
+
+.data-sync-grid>.sync-card:not(.wide-card) {
+    min-height: 240px;
 }
 
 .wide-card {
@@ -155,7 +160,7 @@
 .card-title {
     margin: 0;
     color: #1c2130;
-    font-size: 18px;
+    font-size: 16px;
     line-height: 1.3;
     font-weight: 800;
 }
@@ -172,8 +177,8 @@
 .card-copy {
     margin: 0;
     color: #677286;
-    font-size: 14px;
-    line-height: 1.45;
+    font-size: 13px;
+    line-height: 1.4;
 }
 
 .status-pill {
@@ -214,7 +219,7 @@
 .stats-block {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 7px;
 }
 
 .stat-row {
@@ -240,7 +245,7 @@
 .progress-panel {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 7px;
 }
 
 .progress-row {
@@ -274,7 +279,7 @@
 .period-chip-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: 6px;
 }
 
 .period-chip {
@@ -304,11 +309,11 @@
 
 .upload-btn {
     align-self: flex-start;
-    border: 1px solid #d7deea;
-    background: #ffffff;
-    color: #212838;
+    border: 1px solid #0058bc;
+    background: #0058bc;
+    color: #ffffff;
     border-radius: 12px;
-    padding: 10px 14px;
+    padding: 8px 14px;
     display: inline-flex;
     align-items: center;
     gap: 8px;
@@ -316,6 +321,24 @@
     font-weight: 700;
     line-height: 1.2;
     cursor: pointer;
+    margin-top: auto;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.wide-card-content {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.wide-card .card-copy {
+    max-width: 72%;
+}
+
+.wide-card .upload-btn {
+    margin-top: 0;
+    flex-shrink: 0;
 }
 
 .upload-btn .material-symbols-outlined {
@@ -324,8 +347,13 @@
     height: 18px;
 }
 
+.upload-btn:hover {
+    background: #00479a;
+    border-color: #00479a;
+}
+
 .bottom-action-row {
-    margin-top: 14px;
+    margin-top: 8px;
     display: flex;
     justify-content: flex-end;
 }
@@ -363,7 +391,7 @@
     .data-sync-main {
         margin-left: 0;
         width: 100%;
-        padding: 22px 16px;
+        padding: 18px 14px;
     }
 
     .page-title {
@@ -380,6 +408,15 @@
 
     .bottom-action-row {
         justify-content: flex-start;
+    }
+
+    .wide-card-content {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .wide-card .card-copy {
+        max-width: 100%;
     }
 }
 

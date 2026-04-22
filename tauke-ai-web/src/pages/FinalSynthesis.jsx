@@ -12,19 +12,32 @@ const navItems = [
 
 const supportingCards = [
   {
-    title: "Why not price match",
+    title: "WHY NOT PRICE MATCH",
     copy: "Direct matching drives fast volume but compresses gross margin beyond the threshold needed for stable weekly cashflow.",
-    badge: "Margin Safety"
+    badge: "MARGIN SAFETY"
   },
   {
-    title: "Expected impact",
+    title: "EXPECTED IMPACT",
     copy: "Projected +9% order recovery in 4 to 6 weeks with healthier contribution margin than broad discount-led alternatives.",
-    badge: "Balanced Growth"
+    badge: "BALANCED GROWTH"
   },
   {
-    title: "Operational fit",
+    title: "OPERATIONAL FIT",
     copy: "The rollout can be executed with current staffing and supplier cadence, reducing implementation risk during peak periods.",
-    badge: "Execution Ready"
+    badge: "EXECUTION READY"
+  }
+];
+
+const recommendationDetails = [
+  {
+    title: "A. Why this is recommended",
+    copy:
+      "It captures demand sensitivity without triggering broad discount dependency. The model favors this route because it balances conversion lift with controlled downside risk across cashflow, operational load, and margin stability."
+  },
+  {
+    title: "B. Business fit / expected impact",
+    copy:
+      "Expected to improve weekly transaction momentum while maintaining margin discipline. Forecast indicates healthier recovery velocity versus full price-match tactics, with better sustainability over the next quarter."
   }
 ];
 
@@ -64,7 +77,6 @@ export default function FinalSynthesis() {
       <main className="synthesis-main">
         <div className="synthesis-shell">
           <header className="synthesis-header">
-            <p className="synthesis-step">STEP 7 / FINAL SYNTHESIS</p>
             <h2 className="synthesis-title">Final Synthesis</h2>
             <p className="synthesis-subtitle">
               The system is now presenting the safest and most suitable final recommendation based on
@@ -74,8 +86,8 @@ export default function FinalSynthesis() {
 
           <section className="consensus-card" aria-label="Final recommendation">
             <div className="consensus-head">
-              <p className="consensus-kicker">Consensus Recommendation</p>
-              <span className="consensus-pill">Highest confidence path</span>
+              <p className="consensus-kicker">CONSENSUS RECOMMENDATION</p>
+              <span className="consensus-pill">HIGHEST CONFIDENCE PATH</span>
             </div>
 
             <h3 className="consensus-title">Targeted Value Bundle With Guardrailed Promotions</h3>
@@ -85,23 +97,12 @@ export default function FinalSynthesis() {
             </p>
 
             <div className="consensus-grid">
-              <article className="consensus-block">
-                <h4>Why this is recommended</h4>
-                <p>
-                  It captures demand sensitivity without triggering broad discount dependency. The
-                  model favors this route because it balances conversion lift with controlled downside
-                  risk across cashflow, operational load, and margin stability.
-                </p>
-              </article>
-
-              <article className="consensus-block">
-                <h4>Business fit / expected impact</h4>
-                <p>
-                  Expected to improve weekly transaction momentum while maintaining margin discipline.
-                  Forecast indicates healthier recovery velocity versus full price-match tactics, with
-                  better sustainability over the next quarter.
-                </p>
-              </article>
+              {recommendationDetails.map((item) => (
+                <article key={item.title} className="consensus-block">
+                  <h4>{item.title}</h4>
+                  <p>{item.copy}</p>
+                </article>
+              ))}
             </div>
           </section>
 
@@ -128,8 +129,7 @@ export default function FinalSynthesis() {
               className="primary-action"
               onClick={() => navigate("/campaign-roadmap")}
             >
-              <span>Continue to Roadmap</span>
-              <span className="material-symbols-outlined" aria-hidden="true">arrow_forward</span>
+              Continue to Roadmap <span aria-hidden="true">{"\u2192"}</span>
             </button>
           </div>
         </div>
