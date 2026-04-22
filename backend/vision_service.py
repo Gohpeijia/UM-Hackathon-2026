@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import fitz
 import pandas as pd
 import zhipuai
-import concurrent
+import concurrent.futures
 from dotenv import find_dotenv, load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +64,12 @@ class BoardroomContinueRequest(BaseModel):
     target_month: str = Field(min_length=7)
     boss_answers: str = Field(min_length=1)
 
+class WhatIfSimulationRequest(BaseModel):
+    merchant_id: str = Field(min_length=1)
+    target_month: str = Field(min_length=7)
+    boss_idea: str = Field(min_length=1)
+    customer_distribution_json: str = Field(default="{}")
+
 class SetupProfileRequest(BaseModel):
     merchant_id: str  # We need this to know which shop to update
     target_audience: str
@@ -90,6 +96,16 @@ class LocationUpdateRequest(BaseModel):
     lat: Optional[float] = None
     lon: Optional[float] = None
     place_id: Optional[str] = None
+
+class GenerateRoadmapRequest(BaseModel):
+    merchant_id: str = Field(min_length=1)
+    target_month: str = Field(min_length=7)
+    source: str = Field(min_length=1, pattern=r"^(BOARDROOM|SANDBOX)$")
+    strategy_text: str = Field(...) # The chosen idea
+    justification: str = Field(...) # Why the AI chose it (e.g., the profit boost reasoning)
+    external_signals: Dict[str, Any] = Field(default_factory=dict)
+    financial_trend: Dict[str, Any] = Field(default_factory=dict) # Financial trends related to the roadmap
+    diagnostic_patterns: Dict[str, Any] = Field(default_factory=dict)
 
 
 app = FastAPI(title="Vision Financial Upload Service", version="2.0.0")
@@ -168,6 +184,22 @@ def _strip_markdown_fences(text: str) -> str:
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
     return cleaned
+
+
+def _parse_model_json(raw_text: str, source_name: str, required_kind: Optional[str] = None) -> Any:
+    cleaned = _strip_markdown_fences(raw_text)
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail=f"{source_name} returned invalid JSON: {exc}") from exc
+
+    if required_kind == "object" and not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail=f"{source_name} returned invalid JSON schema: expected object")
+    if required_kind == "array" and not isinstance(data, list):
+        raise HTTPException(status_code=502, detail=f"{source_name} returned invalid JSON schema: expected array")
+
+    return data
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
@@ -268,11 +300,7 @@ def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
     else:
         raise HTTPException(status_code=500, detail="Unsupported zhipu client mode")
 
-    cleaned = _strip_markdown_fences(raw_text)
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail=f"Vision model returned invalid JSON: {exc}") from exc
+    return _parse_model_json(raw_text, source_name="Vision model")
 
 
 def _normalize_pl_rows(parsed: Any) -> List[Dict[str, Any]]:
@@ -419,6 +447,54 @@ def _coerce_master_payload(parsed: Any) -> Dict[str, Any]:
         "document_type": "unknown",
         "operating_expenses": [],
         "supplier_invoices": [],
+    }
+
+
+def _normalize_roadmap_payload(parsed: Any) -> Dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Roadmap model returned invalid schema: expected object")
+
+    estimated_total_days = int(_to_float(parsed.get("estimated_total_days"), 0.0))
+    if estimated_total_days < 1:
+        estimated_total_days = 1
+
+    raw_phases = parsed.get("phases", [])
+    if not isinstance(raw_phases, list):
+        raw_phases = []
+
+    phases: List[Dict[str, Any]] = []
+    for i, raw_phase in enumerate(raw_phases, start=1):
+        if not isinstance(raw_phase, dict):
+            continue
+
+        raw_tasks = raw_phase.get("tasks", [])
+        if not isinstance(raw_tasks, list):
+            raw_tasks = []
+
+        tasks = [str(task).strip() for task in raw_tasks if str(task).strip()]
+        if not tasks:
+            continue
+
+        phase_number = int(_to_float(raw_phase.get("phase_number"), float(i)))
+        if phase_number < 1:
+            phase_number = i
+
+        title = str(raw_phase.get("title", f"Phase {phase_number}")).strip() or f"Phase {phase_number}"
+
+        phases.append(
+            {
+                "phase_number": phase_number,
+                "title": title,
+                "tasks": tasks,
+            }
+        )
+
+    if not phases:
+        raise HTTPException(status_code=502, detail="Roadmap model returned no usable phases.")
+
+    return {
+        "estimated_total_days": estimated_total_days,
+        "phases": phases,
     }
 
 
@@ -808,6 +884,85 @@ def _fetch_financial_comparison(supabase: Client, merchant_id: str, target_month
         },
     }
 
+
+def _fetch_financial_trend(
+    supabase: Client,
+    merchant_id: str,
+    target_month: str,
+    max_context_months: int = 12,
+) -> Dict[str, Any]:
+    history_res = (
+        supabase.table("monthly_summaries")
+        .select("report_month,total_revenue,net_profit")
+        .eq("merchant_id", merchant_id)
+        .lte("report_month", target_month)
+        .order("report_month", desc=False)
+        .limit(max_context_months + 1)
+        .execute()
+    )
+
+    rows = history_res.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="No monthly summary history found for this merchant")
+
+    normalized_rows: List[Dict[str, Any]] = []
+    target_row: Optional[Dict[str, Any]] = None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        report_month = str(row.get("report_month") or "").strip()
+        if not report_month:
+            continue
+        normalized = {
+            "report_month": report_month,
+            "total_revenue": _to_float(row.get("total_revenue"), 0.0),
+            "net_profit": _to_float(row.get("net_profit"), 0.0),
+        }
+        normalized_rows.append(normalized)
+        if report_month == target_month:
+            target_row = normalized
+
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=f"No target month data found for {target_month}")
+
+    historical_rows = [r for r in normalized_rows if r["report_month"] < target_month]
+    if len(historical_rows) > max_context_months:
+        historical_rows = historical_rows[-max_context_months:]
+
+    context_depth = len(historical_rows)
+    if context_depth > 0:
+        avg_revenue = round(sum(r["total_revenue"] for r in historical_rows) / context_depth, 2)
+        avg_profit = round(sum(r["net_profit"] for r in historical_rows) / context_depth, 2)
+    else:
+        avg_revenue = round(target_row["total_revenue"], 2)
+        avg_profit = round(target_row["net_profit"], 2)
+
+    historical_curve = [
+        {"month": r["report_month"], "net_profit": round(r["net_profit"], 2)} for r in historical_rows
+    ]
+
+    return {
+        "target_month": {
+            "report_month": target_row["report_month"],
+            "total_revenue": round(target_row["total_revenue"], 2),
+            "net_profit": round(target_row["net_profit"], 2),
+        },
+        "context_depth_months": context_depth,
+        "rolling_averages": {
+            "avg_revenue": avg_revenue,
+            "avg_profit": avg_profit,
+        },
+        "historical_curve": historical_curve,
+    }
+
+
+def _build_financial_context_payload(supabase: Client, merchant_id: str, target_month: str) -> Dict[str, Any]:
+    return {
+        "financial_trend": _fetch_financial_trend(supabase, merchant_id, target_month),
+        "diagnostic_patterns": _fetch_diagnostic_patterns(supabase, merchant_id, target_month),
+    }
+
+
 def _fetch_traffic_signal(lat: float, lon: float) -> Dict[str, Any]:
     api_key = os.getenv("GOOGLE_PLACES_API_KEY")
     if not api_key:
@@ -1146,7 +1301,7 @@ def _fetch_external_signals(supabase: Client, merchant_id: str, merchant_profile
     }
 
 
-def _analyst_interrogation_prompt(financial_comparison: Dict[str, Any], diagnostic_json: Dict[str, Any]) -> Tuple[str, str]:
+def _analyst_interrogation_prompt(financial_context: Dict[str, Any]) -> Tuple[str, str]:
     system_prompt = (
         "You are an F&B Analyst. Overall Revenue shifted from [Baseline Revenue] to [Target Revenue]. "
         "Here is the underlying 12-point diagnostic JSON explaining the shifts. Look at this data. "
@@ -1157,10 +1312,8 @@ def _analyst_interrogation_prompt(financial_comparison: Dict[str, Any], diagnost
         "Rule 3: Keep the questions concise. Do not overwhelm the Boss."
     )
     user_prompt = (
-        "High-level financial comparison (baseline vs target):\n"
-        f"{json.dumps(financial_comparison, indent=2)}\n\n"
-        "Diagnostic JSON:\n"
-        f"{json.dumps(diagnostic_json, indent=2)}\n\n"
+        "Combined Financial Context JSON:\n"
+        f"{json.dumps(financial_context, indent=2)}\n\n"
         "Return plain text with numbered questions only."
     )
     return system_prompt, user_prompt
@@ -1169,8 +1322,7 @@ def _analyst_interrogation_prompt(financial_comparison: Dict[str, Any], diagnost
 def _analyst_synthesis_prompt(
     merchant_profile: str,
     target_month: str,
-    diagnostic_json: Dict[str, Any],
-    financial_comparison: Dict[str, Any],
+    financial_context: Dict[str, Any],
     boss_answers: str,
     external_signals: Dict[str, Any],
 ) -> Tuple[str, str]:
@@ -1187,10 +1339,8 @@ def _analyst_synthesis_prompt(
     user_prompt = (
         f"Target month: {target_month}\n"
         f"Merchant profile: {merchant_profile}\n\n"
-        "Financial comparison:\n"
-        f"{json.dumps(financial_comparison, indent=2)}\n\n"
-        "12-point diagnostic JSON:\n"
-        f"{json.dumps(diagnostic_json, indent=2)}\n\n"
+        "Combined Financial Context JSON:\n"
+        f"{json.dumps(financial_context, indent=2)}\n\n"
         "Boss answers:\n"
         f"{boss_answers}\n\n"
         "External signals:\n"
@@ -1521,16 +1671,20 @@ def boardroom_start(payload: BoardroomStartRequest) -> Dict[str, Any]:
         supabase = get_supabase_client()
         llm_client = get_zhipu_client()
 
-        financial_comparison = _fetch_financial_comparison(supabase, merchant_id, target_month)
-        diagnostic_json = _fetch_diagnostic_patterns(supabase, merchant_id, target_month)
+        financial_context = _build_financial_context_payload(supabase, merchant_id, target_month)
+        financial_trend = financial_context.get("financial_trend", {})
+        diagnostic_json = financial_context.get("diagnostic_patterns", {})
 
-        sys_prompt, usr_prompt = _analyst_interrogation_prompt(financial_comparison, diagnostic_json)
+        sys_prompt, usr_prompt = _analyst_interrogation_prompt(financial_context)
         analyst_questions = _call_text_llm(llm_client, sys_prompt, usr_prompt, temperature=0.1)
 
         return {
             "merchant_id": merchant_id,
             "target_month": target_month,
-            "financial_comparison": financial_comparison,
+            "financial_context": financial_context,
+            # Backward compatibility for existing frontend consumers.
+            "financial_comparison": financial_trend,
+            "financial_trend": financial_trend,
             "diagnostic_patterns": diagnostic_json,
             "analyst_questions": analyst_questions,
         }
@@ -1550,16 +1704,16 @@ def boardroom_continue(payload: BoardroomContinueRequest) -> Dict[str, Any]:
         supabase = get_supabase_client()
         llm_client = get_zhipu_client()
 
-        financial_comparison = _fetch_financial_comparison(supabase, merchant_id, target_month)
-        diagnostic_json = _fetch_diagnostic_patterns(supabase, merchant_id, target_month)
+        financial_context = _build_financial_context_payload(supabase, merchant_id, target_month)
+        financial_trend = financial_context.get("financial_trend", {})
+        diagnostic_json = financial_context.get("diagnostic_patterns", {})
         merchant_profile = _fetch_merchant_profile(supabase, merchant_id)
         external_signals = _fetch_external_signals(supabase, merchant_id, merchant_profile, target_month)
 
         analyst_sys, analyst_usr = _analyst_synthesis_prompt(
             merchant_profile=merchant_profile,
             target_month=target_month,
-            diagnostic_json=diagnostic_json,
-            financial_comparison=financial_comparison,
+            financial_context=financial_context,
             boss_answers=boss_answers,
             external_signals=external_signals,
         )
@@ -1583,6 +1737,7 @@ def boardroom_continue(payload: BoardroomContinueRequest) -> Dict[str, Any]:
                 diagnostic_json=diagnostic_json,
                 boss_answers=boss_answers,
                 final_approved_theory=final_approved_theory,
+                external_signals=external_signals,
             )
             strategist_action_plan = _call_text_llm(llm_client, strategist_sys, strategist_usr, temperature=0.2)
 
@@ -1595,6 +1750,10 @@ def boardroom_continue(payload: BoardroomContinueRequest) -> Dict[str, Any]:
             "merchant_id": merchant_id,
             "target_month": target_month,
             "merchant_profile": merchant_profile,
+            "financial_context": financial_context,
+            "financial_trend": financial_trend,
+            "financial_comparison": financial_trend,
+            "diagnostic_patterns": diagnostic_json,
             "external_signals": external_signals,
             "theory_v1": theory_v1,
             "supervisor_evaluation": supervisor_evaluation,
@@ -1613,6 +1772,7 @@ class BoardroomDebateRequest(BaseModel):
     proposed_strategies: str = Field(min_length=1)
     merchant_profile: str = Field(default="")
     external_signals: Dict[str, Any] = Field(default_factory=dict)
+    financial_trend: Dict[str, Any] = Field(default_factory=dict) # Financial trends related to the debate
     
     # 👇 NEW: Catching the Internal Signals!
     diagnostic_patterns: Dict[str, Any] = Field(default_factory=dict)
@@ -1622,11 +1782,22 @@ class BoardroomDebateRequest(BaseModel):
 def boardroom_debate(payload: BoardroomDebateRequest) -> Dict[str, Any]:
     try:
         llm_client = get_zhipu_client()
+
+        financial_trend = payload.financial_trend
+        if not isinstance(financial_trend, dict) or not financial_trend:
+            try:
+                supabase = get_supabase_client()
+                target_month = _normalize_report_month(payload.target_month)
+                financial_trend = _fetch_financial_trend(supabase, payload.merchant_id.strip(), target_month)
+            except Exception:
+                financial_trend = {}
+
         user_prompt = (
             f"--- BUSINESS CONTEXT ---\n"
             f"Merchant Profile: {payload.merchant_profile}\n\n"
             
             f"--- INTERNAL SIGNALS ---\n"
+            f"Financial Trend JSON: {json.dumps(financial_trend, indent=2)}\n"
             f"Diagnostic Data: {json.dumps(payload.diagnostic_patterns, indent=2)}\n"
             f"Approved Business Theory (includes Boss's input): {payload.approved_theory}\n\n"
             
@@ -1639,9 +1810,9 @@ def boardroom_debate(payload: BoardroomDebateRequest) -> Dict[str, Any]:
         )
         
         # 1. Define the 3 distinct Agent personas
-        cmo_sys = "You are the CMO (Growth Hacker). Briefly analyze these 3 strategies. Which one drives the most traffic? Point out the marketing pros and cons. Keep it conversational like a chat message (2-3 sentences)."
-        coo_sys = "You are the COO (Kitchen Operations). Briefly analyze these 3 strategies. Which one breaks kitchen flow or staff capacity? Point out the logistical pros and cons. Keep it conversational like a chat message (2-3 sentences)."
-        cfo_sys = "You are the CFO (Risk Manager). Briefly analyze these 3 strategies. Which one ruins our profit margins? Point out the financial pros and cons. Keep it conversational like a chat message (2-3 sentences)."
+        cmo_sys = "You are the CMO (Growth Hacker). Analyze the 3 strategies using the financial_trend plus diagnostic_patterns. Map item-level drops/spikes to external signals like weather and competitors. Pick the strategy with best demand upside and explain pros/cons in 2-3 conversational sentences."
+        coo_sys = "You are the COO (Kitchen Operations). Analyze the 3 strategies using diagnostic_patterns and external signals. Identify which strategy best handles real operational bottlenecks caused by the exact items/time blocks shifting in the data. Keep it conversational in 2-3 sentences."
+        cfo_sys = "You are the CFO (Risk Manager). Compare target_month against rolling_averages to determine above/below baseline. Use historical_curve to check if there are consecutive months of cash bleeding. Rank the 3 strategies by margin protection and downside risk in 2-3 sentences."
 
         # 2. Run the 3 Agents IN PARALLEL (Massive speed boost!)
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
@@ -1656,8 +1827,8 @@ def boardroom_debate(payload: BoardroomDebateRequest) -> Dict[str, Any]:
         # 3. The "Final Boss" Synthesis
         boss_sys = (
             "You are the CEO. Read your executives' opinions on the 3 strategies. "
-            "You must select ONE final strategy to execute that perfectly balances growth, operations, and finance. "
-            "Write your final decision clearly and state why you chose it over the others."
+            "Base your final decision on long-term trend direction (rolling averages + historical curve), not one-month panic. "
+            "Select ONE strategy that best balances growth, operations, and finance, and explain why it wins."
         )
         boss_usr = f"CMO says:\n{cmo_text}\n\nCOO says:\n{coo_text}\n\nCFO says:\n{cfo_text}\n\nWhat is your final decision?"
         
@@ -1679,6 +1850,233 @@ def boardroom_debate(payload: BoardroomDebateRequest) -> Dict[str, Any]:
         
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Parallel debate generation failed: {exc}") from exc
+
+@app.post("/sandbox/simulate-what-if")
+def simulate_what_if(payload: WhatIfSimulationRequest) -> Dict[str, Any]:
+    try:
+        supabase = get_supabase_client()
+        llm_client = get_zhipu_client()
+
+        # 1. Fetch exact signals
+        merchant_profile = _fetch_merchant_profile(supabase, payload.merchant_id)
+        external_signals = _fetch_external_signals(supabase, payload.merchant_id, merchant_profile, payload.target_month)
+        financial_context = _build_financial_context_payload(supabase, payload.merchant_id, payload.target_month)
+        financial_trend = financial_context.get("financial_trend", {})
+        diagnostic_patterns = financial_context.get("diagnostic_patterns", {})
+
+        # 2. Dynamic Agent Count (Based on Foot Traffic)
+        foot_traffic_data = external_signals.get("foot_traffic", {}).get("data", {})
+        if not isinstance(foot_traffic_data, dict):
+            foot_traffic_data = {}
+        live_intensity = _to_float(foot_traffic_data.get("live_intensity"), 50.0)
+        agent_count = max(5, min(100, int(live_intensity)))
+
+        # 3. RUN THE PROFIT-DRIVEN SWARM SIMULATION
+        simulation_sys = (
+            "You are an advanced Swarm Intelligence Game Master and Financial Auditor. "
+            "Your job is to simulate a 'What-If' scenario by generating a raw JSON object.\n\n"
+            "STRICT INSTRUCTIONS:\n"
+            "1. FINANCIAL COMPARISON: Look at the Current Sales Diagnostics. Estimate what the profit would be WITHOUT the idea (Baseline). Then, estimate the extra costs and extra revenue OF the idea. Calculate the Profit Boost (or Loss).\n"
+            "2. THE VERDICT: YOU must make the final call (PROCEED or ABORT) based on whether the Profit Boost is worth the risk, NOT just based on conversion rates.\n"
+            f"3. THE SWARM: Generate exactly {agent_count} virtual customer agents inside the 'agents' array. Give them unique traits and logic.\n"
+            "4. OUTPUT FORMAT: Return ONLY pure JSON. NO markdown, NO text outside the JSON.\n\n"
+            "JSON SCHEMA REQUIREMENT:\n"
+            "{\n"
+            "  \"financial_analysis\": {\n"
+            "    \"baseline_estimated_profit\": 1500,\n"
+            "    \"projected_new_profit\": 1800,\n"
+            "    \"profit_boost\": 300,\n"
+            "    \"final_verdict\": \"PROCEED\",\n"
+            "    \"verdict_reason\": \"The RM300 boost outweighs the RM50 staff overtime cost.\"\n"
+            "  },\n"
+            "  \"agents\": [\n"
+            "    {\"id\": 1, \"role\": \"Student\", \"trait\": \"Broke\", \"decision\": \"pass\", \"reason\": \"Too expensive.\"}\n"
+            "  ]\n"
+            "}"
+        )
+
+        simulation_usr = (
+            f"--- THE WHAT-IF SCENARIO ---\n"
+            f"Boss Idea: {payload.boss_idea}\n\n"
+            
+            f"--- THE ENVIRONMENT ---\n"
+            f"Customer Demographic Distribution: {payload.customer_distribution_json}\n"
+            f"Current Weather Data: {json.dumps(external_signals.get('weather', {}))}\n"
+            f"Competitor Data: {json.dumps(external_signals.get('web', {}))}\n"
+            f"Combined Financial Context JSON: {json.dumps({'financial_trend': financial_trend, 'diagnostic_patterns': diagnostic_patterns})}\n\n"
+            
+            f"Run the simulation. Generate the financial comparison and exactly {agent_count} agents. Return pure JSON."
+        )
+
+        raw_json_response = _call_text_llm(llm_client, simulation_sys, simulation_usr, temperature=0.5)
+
+        # 4. Clean and Parse the JSON safely
+        simulation_data = _parse_model_json(
+            raw_json_response,
+            source_name="Simulation model",
+            required_kind="object",
+        )
+
+        # 5. Extract the AI's exact math and decisions
+        financials = simulation_data.get("financial_analysis", {})
+        if not isinstance(financials, dict):
+            financials = {}
+
+        raw_agents = simulation_data.get("agents", [])
+        if not isinstance(raw_agents, list):
+            raw_agents = []
+
+        agents: List[Dict[str, Any]] = []
+        for i, raw_agent in enumerate(raw_agents, start=1):
+            if not isinstance(raw_agent, dict):
+                continue
+
+            decision = str(raw_agent.get("decision", "pass")).strip().lower()
+            if decision not in {"buy", "pass"}:
+                decision = "pass"
+
+            agents.append(
+                {
+                    "id": i,
+                    "role": str(raw_agent.get("role", "Unknown")).strip() or "Unknown",
+                    "trait": str(raw_agent.get("trait", "Undecided")).strip() or "Undecided",
+                    "decision": decision,
+                    "reason": str(raw_agent.get("reason", "No reason provided.")).strip() or "No reason provided.",
+                }
+            )
+
+        if len(agents) > agent_count:
+            agents = agents[:agent_count]
+        while len(agents) < agent_count:
+            idx = len(agents) + 1
+            agents.append(
+                {
+                    "id": idx,
+                    "role": "Unknown",
+                    "trait": "Neutral",
+                    "decision": "pass",
+                    "reason": "Padded to satisfy required agent count.",
+                }
+            )
+
+        baseline_profit = _to_float(financials.get("baseline_estimated_profit"), 0.0)
+        projected_profit = _to_float(financials.get("projected_new_profit"), baseline_profit)
+        profit_boost = _to_float(financials.get("profit_boost"), projected_profit - baseline_profit)
+
+        verdict = str(financials.get("final_verdict", "")).strip().upper()
+        if verdict not in {"PROCEED", "ABORT"}:
+            verdict = "PROCEED" if profit_boost > 0 else "ABORT"
+
+        verdict_reason = str(financials.get("verdict_reason", "")).strip()
+        if not verdict_reason:
+            verdict_reason = (
+                "Projected profit exceeds baseline profit."
+                if verdict == "PROCEED"
+                else "Projected profit does not exceed baseline profit."
+            )
+
+        # UI Stats (for the scoreboard)
+        total_buy = sum(1 for agent in agents if agent.get("decision") == "buy")
+        total_pass = len(agents) - total_buy
+
+        return {
+            "status": "success",
+            "boss_idea": payload.boss_idea,
+            "verdict": verdict,
+            "financials": {
+                "baseline_profit": round(baseline_profit, 2),
+                "projected_profit": round(projected_profit, 2),
+                "profit_boost": round(profit_boost, 2),
+                "reasoning": verdict_reason,
+            },
+            "stats": {
+                "total_agents": len(agents),
+                "total_buy": total_buy,
+                "total_pass": total_pass
+            },
+            "swarm_data": agents
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Simulation failed: {exc}") from exc
+    
+@app.post("/roadmap/generate")
+def generate_roadmap(payload: GenerateRoadmapRequest) -> Dict[str, Any]:
+    try:
+        supabase = get_supabase_client()
+        llm_client = get_zhipu_client()
+        target_month = _normalize_report_month(payload.target_month)
+
+        financial_trend = payload.financial_trend if isinstance(payload.financial_trend, dict) else {}
+        if not financial_trend:
+            financial_trend = _fetch_financial_trend(supabase, payload.merchant_id, target_month)
+
+        diagnostic_patterns = payload.diagnostic_patterns if isinstance(payload.diagnostic_patterns, dict) else {}
+        if not diagnostic_patterns:
+            diagnostic_patterns = _fetch_diagnostic_patterns(supabase, payload.merchant_id, target_month)
+
+        combined_financial_context = {
+            "financial_trend": financial_trend,
+            "diagnostic_patterns": diagnostic_patterns,
+        }
+
+        roadmap_sys = (
+            "You are an elite Project Manager for an F&B business. Your job is to take a business strategy "
+            "and break it down into a highly actionable, context-aware execution roadmap.\n\n"
+            "STRICT INSTRUCTIONS:\n"
+            "1. DYNAMIC PHASES: The number of phases and tasks MUST adapt to the complexity of the strategy.\n"
+            "2. CONTEXT-DRIVEN TASKS: You MUST weave the provided external signals (weather, competitors) and internal diagnostics directly into the tasks. Do NOT write generic tasks like 'Launch promo'. Instead write: 'Launch GrabFood promo at 12 PM to capture the predicted 85% foot traffic spike during the rainy weather.'\n"
+            "3. JUSTIFICATION ALIGNMENT: Ensure the tasks specifically address the 'Why' (Justification) provided by the CEO/Financial Auditor.\n"
+            "4. OUTPUT FORMAT: Return ONLY a pure JSON object. NO markdown fences, NO extra text.\n\n"
+            "JSON SCHEMA REQUIREMENT:\n"
+            "{\n"
+            "  \"estimated_total_days\": 14,\n"
+            "  \"phases\": [\n"
+            "    {\n"
+            "      \"phase_number\": 1,\n"
+            "      \"title\": \"Preparation & Risk Mitigation\",\n"
+            "      \"tasks\": [\"Detailed, context-aware task 1\", \"Detailed, context-aware task 2\"]\n"
+            "    }\n"
+            "  ]\n"
+            "}"
+        )
+
+        roadmap_usr = (
+            f"--- THE STRATEGY ---\n"
+            f"Source: {payload.source}\n"
+            f"Plan to Execute: {payload.strategy_text}\n"
+            f"Justification / Reasoning: {payload.justification}\n\n"
+            
+            f"--- THE ENVIRONMENT (Use this to make tasks hyper-specific) ---\n"
+            f"Combined Financial Context JSON: {json.dumps(combined_financial_context)}\n"
+            f"External Signals (Weather, Traffic, Competitors): {json.dumps(payload.external_signals)}\n\n"
+            
+            "Generate the JSON execution roadmap."
+        )
+
+        # Temperature 0.4 gives it enough creativity to apply the weather/traffic to the tasks logically
+        raw_json_response = _call_text_llm(llm_client, roadmap_sys, roadmap_usr, temperature=0.4)
+
+        roadmap_data = _parse_model_json(
+            raw_json_response,
+            source_name="Roadmap model",
+            required_kind="object",
+        )
+        roadmap_data = _normalize_roadmap_payload(roadmap_data)
+
+        # Save to Database (Optional: Save it so the Boss can view it later)
+        if payload.source == "BOARDROOM":
+            supabase.table("monthly_summaries").update({
+                "action_plan": json.dumps(roadmap_data) # Save the structured JSON
+            }).eq("merchant_id", payload.merchant_id).eq("report_month", target_month).execute()
+
+        return {
+            "status": "success",
+            "roadmap": roadmap_data
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Roadmap generation failed: {exc}") from exc
 
 
 if __name__ == "__main__":
