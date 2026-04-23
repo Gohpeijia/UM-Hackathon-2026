@@ -23,7 +23,7 @@ from collections import defaultdict
 from datetime import datetime
 
 
-load_dotenv(find_dotenv())
+load_dotenv(find_dotenv(), override=True)
 
 
 MASTER_EXTRACT_PROMPT = (
@@ -140,6 +140,14 @@ def get_zhipu_api_key() -> str:
     return api_key
 
 
+def _get_google_places_api_key() -> Optional[str]:
+    """Read Google Places API key tolerating both env var spellings."""
+    return (
+        os.getenv("GOOGLE_PLACES_API_KEY")
+        or os.getenv("GOOGLE_PLACE_API_KEY")
+    )
+
+
 def get_zhipu_client() -> Any:
     api_key = get_zhipu_api_key()
     if hasattr(zhipuai, "ZhipuAI"):
@@ -169,39 +177,168 @@ def get_supabase_client() -> Client:
 
 
 def _extract_model_text(raw_content: Any) -> str:
+    if raw_content is None:
+        return ""
+
     if isinstance(raw_content, str):
         return raw_content.strip()
+
+    if isinstance(raw_content, dict):
+        text_value = raw_content.get("text")
+        if isinstance(text_value, str):
+            return text_value.strip()
+
+        content_value = raw_content.get("content")
+        if content_value is not None:
+            return _extract_model_text(content_value)
+
+        return ""
 
     if isinstance(raw_content, list):
         parts: List[str] = []
         for part in raw_content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict):
-                text_value = part.get("text") or part.get("content")
-                if isinstance(text_value, str):
-                    parts.append(text_value)
+            extracted = _extract_model_text(part)
+            if extracted:
+                parts.append(extracted)
         return "\n".join(parts).strip()
 
     return str(raw_content).strip()
 
 
 def _strip_markdown_fences(text: str) -> str:
+    """Remove any surrounding markdown code fences from an LLM response."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
+        first_newline = cleaned.find("\n")
+        cleaned = cleaned[first_newline + 1:] if first_newline != -1 else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
     return cleaned
 
 
+def _extract_json_from_text(raw_text: str, want_array: bool = False) -> str:
+    """Multi-strategy JSON extractor — handles preamble text, markdown fences, truncated fences."""
+    # Strategy 1: plain strip of fences
+    candidate = _strip_markdown_fences(raw_text)
+    try:
+        json.loads(candidate)
+        return candidate
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2: find the first { or [ and last } or ]
+    open_char, close_char = ("[", "]") if want_array else ("{", "}")
+    start = raw_text.find(open_char)
+    end = raw_text.rfind(close_char)
+    if start != -1 and end != -1 and end > start:
+        candidate = raw_text[start : end + 1]
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3: try the stripped candidate anyway (e.g. trailing garbage after })
+    for open_c, close_c in [("{" , "}"), ("[", "]")]:
+        s = raw_text.find(open_c)
+        e = raw_text.rfind(close_c)
+        if s != -1 and e != -1 and e > s:
+            try:
+                json.loads(raw_text[s : e + 1])
+                return raw_text[s : e + 1]
+            except json.JSONDecodeError:
+                pass
+
+    # Strategy 4: return stripped as last resort (let caller raise a clear error)
+    return candidate
+
+
+def _repair_truncated_json(text: str) -> str:
+    """
+    Attempt to repair JSON that was cut off mid-stream (e.g. by max_tokens).
+    Strategy: strip everything after the last cleanly-closed value, then
+    close any unclosed braces/brackets in reverse order.
+    """
+    if not text:
+        return text
+
+    # Step 1: truncate at the last position that ends a clean value
+    # Walk backwards from the end to find the last } or ] or " or digit
+    t = text.rstrip()
+    # Remove any trailing comma, colon, or partial key
+    import re as _re
+    # Strip trailing incomplete tokens: comma, colon, partial string, whitespace
+    t = _re.sub(r'[,:\s]*$', '', t)
+    # If we ended mid-string (odd number of unescaped quotes), strip the open string
+    # Count quotes not preceded by backslash
+    in_string = False
+    escape_next = False
+    for ch in t:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\':
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+    if in_string:
+        # Remove back to the last unescaped opening quote
+        last_quote = max(t.rfind('"'), 0)
+        t = t[:last_quote].rstrip().rstrip(',').rstrip()
+
+    # Step 2: close any open structures
+    stack = []
+    in_string = False
+    escape_next = False
+    for ch in t:
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in '{[':
+            stack.append('}' if ch == '{' else ']')
+        elif ch in '}]':
+            if stack:
+                stack.pop()
+
+    # Append the closing tokens in reverse
+    closing = ''.join(reversed(stack))
+    return t + closing
+
+
 def _parse_model_json(raw_text: str, source_name: str, required_kind: Optional[str] = None) -> Any:
-    cleaned = _strip_markdown_fences(raw_text)
+    """Parse JSON from an LLM response, tolerating preamble text and markdown fences."""
+    if not isinstance(raw_text, str):
+        raise HTTPException(status_code=502, detail=f"{source_name} returned non-text output before JSON parsing")
+
+    if not raw_text.strip() or raw_text.strip().lower() in {"none", "null"}:
+        raise HTTPException(status_code=502, detail=f"{source_name} returned empty output before JSON parsing")
+
+    want_array = required_kind == "array"
+    cleaned = _extract_json_from_text(raw_text, want_array=want_array)
 
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail=f"{source_name} returned invalid JSON: {exc}") from exc
+        # Attempt to repair truncated JSON by closing unclosed braces/brackets
+        repaired = _repair_truncated_json(cleaned)
+        try:
+            data = json.loads(repaired)
+            print(f"[JSON Repair] Recovered truncated JSON for {source_name}")
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{source_name} returned invalid JSON: {exc}. Raw (first 300): {raw_text[:300]}"
+            ) from exc
 
     if required_kind == "object" and not isinstance(data, dict):
         raise HTTPException(status_code=502, detail=f"{source_name} returned invalid JSON schema: expected object")
@@ -261,55 +398,87 @@ def _render_pdf_pages_as_data_urls(file_bytes: bytes, max_pages: int = 5) -> Lis
 
 
 def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
-    mode = client.get("mode")
-    sdk_client = client.get("client")
+    """Call ZhipuAI glm-4.6v-flash vision model via direct HTTP API.
 
-    if mode == "modern":
-        response = sdk_client.chat.completions.create(
-            model="glm-4.6v-flash",
-            temperature=0,
-            messages=[
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Read this document and return JSON only."},
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                    ],
-                },
-            ],
+    The legacy SDK (v1.0.7) returns empty content for vision calls,
+    so we bypass it and call the HTTP API directly with JWT auth.
+    """
+    _ = client  # Kept for call-site compat; we now use direct HTTP
+
+    api_key = get_zhipu_api_key()
+
+    # ZhipuAI API key format: "{id}.{secret}" — split to build JWT
+    parts = api_key.split(".")
+    if len(parts) != 2:
+        raise HTTPException(status_code=500, detail="ZHIPUAI_API_KEY must be in 'id.secret' format")
+
+    api_id, api_secret = parts[0], parts[1]
+
+    # Build the JWT token (ZhipuAI's auth method)
+    import time as _time
+    try:
+        import jwt
+        now_ms = int(_time.time() * 1000)
+        payload_jwt = {
+            "api_key": api_id,
+            "exp": now_ms + 300_000,  # 5 min expiry
+            "timestamp": now_ms,
+        }
+        token = jwt.encode(payload_jwt, api_secret, algorithm="HS256", headers={"alg": "HS256", "sign_type": "SIGN"})
+    except Exception as jwt_err:
+        raise HTTPException(status_code=500, detail=f"Failed to sign ZhipuAI JWT: {jwt_err}")
+
+    # Call the vision model via direct HTTP
+    try:
+        response = requests.post(
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "glm-4.6v-flash",
+                "temperature": 0.1,
+                "max_tokens": 4000,
+                "messages": [
+                    {"role": "system", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Read this document and return JSON only."},
+                            {"type": "image_url", "image_url": {"url": image_data_url}},
+                        ],
+                    },
+                ],
+            },
+            timeout=90,
         )
 
-        if not getattr(response, "choices", None):
-            raise HTTPException(status_code=502, detail="Vision model returned no choices")
+        # Handle HTML error pages
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            raise Exception(f"ZhipuAI returned HTML error (HTTP {response.status_code})")
 
-        raw_text = _extract_model_text(response.choices[0].message.content)
-    elif mode == "legacy":
-        legacy_response = sdk_client.model_api.invoke(
-            model="glm-4.6v-flash",
-            prompt=[
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Read this document and return JSON only."},
-                        {"type": "image_url", "image_url": {"url": image_data_url}},
-                    ],
-                },
-            ],
-        )
+        if not response.ok:
+            raise Exception(f"ZhipuAI vision HTTP {response.status_code}: {response.text[:300]}")
 
-        data = legacy_response.get("data") if isinstance(legacy_response, dict) else None
-        choices = data.get("choices") if isinstance(data, dict) else None
+        data = response.json()
+        choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise HTTPException(status_code=502, detail=f"Legacy vision response invalid: {legacy_response}")
+            raise HTTPException(status_code=502, detail=f"Vision model returned no choices: {data}")
 
-        first_choice = choices[0] if isinstance(choices[0], dict) else {}
-        raw_text = _extract_model_text(first_choice.get("content", ""))
-    else:
-        raise HTTPException(status_code=500, detail="Unsupported zhipu client mode")
+        raw_text = _extract_model_text(choices[0].get("message", {}).get("content", ""))
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ZhipuAI vision request failed: {exc}",
+        ) from exc
 
     return _parse_model_json(raw_text, source_name="Vision model")
+
 
 
 def _normalize_pl_rows(parsed: Any) -> List[Dict[str, Any]]:
@@ -674,7 +843,7 @@ async def analyze_surroundings(merchant_id: str, lat: float, lon: float):
     }
 
 def get_neighborhood_context(lat, lon, radius=1000):
-    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    api_key = _get_google_places_api_key()
     url = "https://places.googleapis.com/v1/places:searchNearby"
     
     headers = {
@@ -749,6 +918,7 @@ def _replace_supplier_invoices(supabase: Client, summary_id: str, rows: List[Dic
 def _call_text_llm(
     client: Any, system_prompt: str, user_prompt: str, temperature: float = 0.2
 ) -> str:
+    """Call ILMU glm-5.1 with auto-retry on 504/timeout errors."""
     _ = client  # Kept for call-site compatibility; glm-5.1 now routes via ILMU.
 
     ilmu_api_key = os.getenv("ILMU_API_KEY")
@@ -758,55 +928,124 @@ def _call_text_llm(
             detail="Missing ILMU_API_KEY environment variable for glm-5.1",
         )
 
+    # The only model available on this ILMU subscription is ilmu-glm-5.1
     model_name = os.getenv("ILMU_MODEL", "ilmu-glm-5.1")
 
-    try:
-        response = requests.post(
-            "https://api.ilmu.ai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {ilmu_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
+    max_retries = 2
+    last_error = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            request_body = {
                 "model": model_name,
                 "temperature": temperature,
+                "max_tokens": 3000,  # Enough for full JSON without truncation
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            },
-            timeout=60,
-        )
-        
-        # Check if the API returned an error code, and extract the real error message
-        if not response.ok:
-            error_details = response.text
-            try:
-                error_details = response.json()
-            except ValueError:
-                pass
-            raise Exception(f"HTTP {response.status_code}: {error_details}")
-            
-        response.raise_for_status()
-        
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"ILMU text model request failed: {exc}",
-        ) from exc
+            }
 
-    payload = response.json() if response.content else {}
-    choices = payload.get("choices") if isinstance(payload, dict) else None
-    if not isinstance(choices, list) or not choices:
-        raise HTTPException(
-            status_code=502,
-            detail=f"ILMU text response invalid: {payload}",
-        )
+            response = requests.post(
+                "https://api.ilmu.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {ilmu_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=request_body,
+                timeout=90,  # Under Cloudflare's ~100s gateway timeout
+            )
 
-    first_choice = choices[0] if isinstance(choices[0], dict) else {}
-    message = first_choice.get("message") if isinstance(first_choice, dict) else {}
-    content = message.get("content") if isinstance(message, dict) else ""
-    return _extract_model_text(content)
+            # Detect HTML error pages (504, 502 from Cloudflare)
+            content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type or response.text.strip().startswith("<!DOCTYPE"):
+                raise requests.exceptions.ConnectionError(
+                    f"ILMU returned HTML error page (HTTP {response.status_code}) — server overloaded, retrying..."
+                )
+
+            # Check if the API returned an error code
+            if not response.ok:
+                error_details = response.text
+                try:
+                    error_details = response.json()
+                except ValueError:
+                    pass
+                raise Exception(f"HTTP {response.status_code}: {error_details}")
+
+            # SUCCESS — parse the response
+            payload = response.json() if response.content else {}
+            choices = payload.get("choices") if isinstance(payload, dict) else None
+            if not isinstance(choices, list) or not choices:
+                raise Exception(f"ILMU text response missing choices: {payload}")
+
+            first_choice = choices[0] if isinstance(choices[0], dict) else {}
+            message = first_choice.get("message") if isinstance(first_choice, dict) else {}
+            content = message.get("content") if isinstance(message, dict) else ""
+            text_output = _extract_model_text(content)
+
+            finish_reason = str(first_choice.get("finish_reason", "")).strip().lower() if isinstance(first_choice, dict) else ""
+            if finish_reason in {"content_filter", "sensitive", "blocked"}:
+                raise Exception(f"ILMU finish_reason={finish_reason}")
+
+            if not text_output and isinstance(message, dict):
+                text_output = _extract_model_text(message.get("reasoning_content"))
+
+            if not text_output and isinstance(first_choice, dict):
+                # Fallback for providers that sometimes return top-level text.
+                text_output = _extract_model_text(first_choice.get("text"))
+
+            if not text_output and isinstance(payload, dict):
+                text_output = _extract_model_text(payload.get("output_text"))
+
+            if not text_output:
+                # Debug: log raw payload to diagnose empty content
+                print(f"[ILMU Empty] finish_reason={finish_reason!r} | raw payload keys={list(payload.keys()) if isinstance(payload, dict) else type(payload)} | message={str(message)[:200]}")
+                raise Exception("ILMU returned empty content in choices[0]")
+
+            return text_output
+
+        except HTTPException:
+            raise  # Don't retry on our own validation errors
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
+            last_error = exc
+            if attempt < max_retries:
+                import time as _time
+                wait_secs = 3 * (attempt + 1)
+                print(f"[ILMU Retry {attempt+1}/{max_retries}] Timeout/connection error, waiting {wait_secs}s: {exc}")
+                _time.sleep(wait_secs)
+                continue
+        except Exception as exc:
+            last_error = exc
+            exc_str = str(exc).lower()
+            retryable = any(
+                kw in exc_str
+                for kw in [
+                    "504",
+                    "502",
+                    "timeout",
+                    "looping",
+                    "flagged",
+                    "empty content",
+                    "missing choices",
+                    "content_filter",
+                    "blocked",
+                ]
+            )
+            if attempt < max_retries and retryable:
+                import time as _time
+                wait_secs = 3 * (attempt + 1)
+                # Bump temperature on retry to break looping patterns
+                temperature = min(temperature + 0.2, 0.8)
+                print(f"[ILMU Retry {attempt+1}/{max_retries}] Error (will retry with temp={temperature}), waiting {wait_secs}s: {exc}")
+                _time.sleep(wait_secs)
+                continue
+            break
+
+    # All retries exhausted
+    raise HTTPException(
+        status_code=502,
+        detail=f"ILMU text model request failed after {max_retries + 1} attempts: {last_error}",
+    )
 
 
 def _get_previous_month(month_str: str) -> str:
@@ -869,13 +1108,12 @@ def _fetch_financial_comparison(supabase: Client, merchant_id: str, target_month
         .execute()
     )
 
-    if not baseline_res.data:
-        raise HTTPException(status_code=404, detail=f"No baseline month data found for {baseline_month}")
+    # Gracefully degrade when baseline month has no data yet (common for new merchants)
+    baseline: Dict[str, Any] = baseline_res.data[0] if baseline_res.data else {}
     if not target_res.data:
         raise HTTPException(status_code=404, detail=f"No target month data found for {target_month}")
-
-    baseline = baseline_res.data[0]
     target = target_res.data[0]
+
     return {
         "baseline_month": baseline_month,
         "target_month": target_month,
@@ -911,8 +1149,20 @@ def _fetch_financial_trend(
     )
 
     rows = history_res.data or []
+
+    # Gracefully handle merchants with no history yet — synthesise a stub row
     if not rows:
-        raise HTTPException(status_code=404, detail="No monthly summary history found for this merchant")
+        stub = {
+            "report_month": target_month,
+            "total_revenue": 0.0,
+            "net_profit": 0.0,
+        }
+        return {
+            "target_month": stub,
+            "context_depth_months": 0,
+            "rolling_averages": {"avg_revenue": 0.0, "avg_profit": 0.0},
+            "historical_curve": [],
+        }
 
     normalized_rows: List[Dict[str, Any]] = []
     target_row: Optional[Dict[str, Any]] = None
@@ -931,8 +1181,13 @@ def _fetch_financial_trend(
         if report_month == target_month:
             target_row = normalized
 
+    # If target month row not found, use the latest available row as a stub
     if target_row is None:
-        raise HTTPException(status_code=404, detail=f"No target month data found for {target_month}")
+        target_row = normalized_rows[-1] if normalized_rows else {
+            "report_month": target_month,
+            "total_revenue": 0.0,
+            "net_profit": 0.0,
+        }
 
     historical_rows = [r for r in normalized_rows if r["report_month"] < target_month]
     if len(historical_rows) > max_context_months:
@@ -966,14 +1221,30 @@ def _fetch_financial_trend(
 
 
 def _build_financial_context_payload(supabase: Client, merchant_id: str, target_month: str) -> Dict[str, Any]:
+    # Gracefully handle merchants without enough historical data yet
+    try:
+        financial_trend = _fetch_financial_trend(supabase, merchant_id, target_month)
+    except Exception:
+        financial_trend = {
+            "target_month": {"report_month": target_month, "total_revenue": 0.0, "net_profit": 0.0},
+            "context_depth_months": 0,
+            "rolling_averages": {"avg_revenue": 0.0, "avg_profit": 0.0},
+            "historical_curve": [],
+        }
+
+    try:
+        diagnostic_patterns = _fetch_diagnostic_patterns(supabase, merchant_id, target_month)
+    except Exception:
+        diagnostic_patterns = {}
+
     return {
-        "financial_trend": _fetch_financial_trend(supabase, merchant_id, target_month),
-        "diagnostic_patterns": _fetch_diagnostic_patterns(supabase, merchant_id, target_month),
+        "financial_trend": financial_trend,
+        "diagnostic_patterns": diagnostic_patterns,
     }
 
 
 def _fetch_traffic_signal(lat: float, lon: float) -> Dict[str, Any]:
-    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    api_key = _get_google_places_api_key()
     if not api_key:
         return {"attempted": True, "status": "error", "error": "Missing GOOGLE_PLACES_API_KEY", "data": {}}
 
@@ -1035,7 +1306,7 @@ def _fetch_foot_traffic_signal(lat: float, lon: float) -> Dict[str, Any]:
         return {"attempted": True, "status": "error", "error": str(exc), "data": {}}
     
 def get_coordinates(address):
-    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    api_key = _get_google_places_api_key()
     url = f"https://maps.googleapis.com/maps/api/geocode/json?address={address}&key={api_key}"
     try:
         response = requests.get(url).json()
@@ -1049,7 +1320,7 @@ def get_coordinates(address):
     
 # Turns coordinates back into a human-readable address (e.g. full street address)
 def reverse_geocode(lat: float, lon: float):
-    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    api_key = _get_google_places_api_key()
     url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lon}&key={api_key}"
     try:
         response = requests.get(url).json()
@@ -1060,7 +1331,7 @@ def reverse_geocode(lat: float, lon: float):
         return f"Error: {e}"
     
 def get_details_from_place_id(place_id: str):
-    api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    api_key = _get_google_places_api_key()
     url = f"https://maps.googleapis.com/maps/api/place/details/json?place_id={place_id}&key={api_key}"
     try:
         response = requests.get(url).json()
@@ -1184,27 +1455,23 @@ def _fetch_web_signal(merchant_profile: str, target_month: str) -> Dict[str, Any
 
 
 def _fetch_places_signal(merchant_profile: str) -> Dict[str, Any]:
-    places_api_key = os.getenv("GOOGLE_PLACES_API_KEY")
+    """Fetch nearby competitor cafes/restaurants using Google Places Text Search API."""
+    places_api_key = _get_google_places_api_key()
     if not places_api_key:
         return {
             "attempted": True,
             "status": "error",
-            "error": "Missing GOOGLE_PLACES_API_KEY",
+            "error": "Missing GOOGLE_PLACES_API_KEY / GOOGLE_PLACE_API_KEY",
             "data": {},
         }
 
-    query = f"cafe OR restaurant near {_extract_location_hint(merchant_profile)}"
+    location_hint = _extract_location_hint(merchant_profile)
+    query = f"cafe OR restaurant near {location_hint}"
     try:
-        url = "https://gnews.io/api/v4/search"
+        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
         params = {
             "query": query,
-            "from": start_date,
-            "to": end_date,
-            "lang": "en",
-            "country": "my",
-            "max": 5, # Grabs the top 5 articles across both categories
-            "sortby": "relevance", # Changed from publishedAt to relevance to get the most impactful news
-            "apikey": gnews_api_key,
+            "key": places_api_key,
         }
         resp = requests.get(url, params=params, timeout=25)
         resp.raise_for_status()
@@ -2070,8 +2337,12 @@ def simulate_what_if(payload: WhatIfSimulationRequest) -> Dict[str, Any]:
         profit_boost = _to_float(financials.get("profit_boost"), projected_profit - baseline_profit)
 
         verdict = str(financials.get("final_verdict", "")).strip().upper()
-        if verdict not in {"PROCEED", "ABORT"}:
-            verdict = "PROCEED" if profit_boost > 0 else "ABORT"
+        if verdict not in {"PROCEED", "ABORT", "AVOID"}:
+            verdict = "PROCEED" if profit_boost > 0 else "AVOID"
+        # Hard override: never PROCEED if profit is negative
+        if profit_boost < 0 and verdict == "PROCEED":
+            verdict = "AVOID"
+            print(f"[Verdict Override] Forced AVOID because profit_boost={profit_boost:.2f}")
 
         verdict_reason = str(financials.get("verdict_reason", "")).strip()
         if not verdict_reason:
@@ -2410,6 +2681,138 @@ class SwarmSimulationRequest(BaseModel):
     target_month: str = Field(min_length=7)
     scenario_prompt: str = Field(min_length=1)
 
+
+def _build_local_swarm_fallback(
+    scenario_prompt: str,
+    slim_fin: Dict[str, Any],
+    sigs: Dict[str, Any],
+    merchant_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    scenario_text = str(scenario_prompt or "").strip()
+    scenario_lower = scenario_text.lower()
+
+    base_profit = round(_to_float(slim_fin.get("profit"), 0.0), 2)
+    avg_rev = _to_float(slim_fin.get("avg_rev"), 0.0)
+    scale_base = avg_rev if avg_rev > 0 else max(abs(base_profit), 500.0)
+
+    foot_intensity = max(0.0, min(100.0, _to_float(sigs.get("foot_traffic"), 50.0)))
+    competitors = max(0.0, _to_float(sigs.get("competitors"), 0.0))
+    weather = str(sigs.get("weather", "N/A"))
+    traffic = str(sigs.get("traffic", "N/A"))
+
+    signal_score = (foot_intensity - 50.0) / 20.0
+    signal_score -= min(competitors, 20.0) / 10.0
+    if "heavy" in traffic.lower():
+        signal_score -= 1.0
+    if "rain" in weather.lower():
+        signal_score -= 0.5
+    elif "clear" in weather.lower() or "sun" in weather.lower():
+        signal_score += 0.3
+
+    positive_keywords = [
+        "bundle",
+        "promo",
+        "promotion",
+        "delivery",
+        "upsell",
+        "loyalty",
+        "combo",
+        "campaign",
+        "grabfood",
+        "foodpanda",
+        "new menu",
+    ]
+    negative_keywords = [
+        "raise price",
+        "price hike",
+        "cut staff",
+        "shorten hours",
+        "close early",
+        "remove menu",
+        "stop promo",
+        "higher cost",
+    ]
+
+    keyword_score = sum(1 for kw in positive_keywords if kw in scenario_lower)
+    keyword_score -= sum(1 for kw in negative_keywords if kw in scenario_lower)
+
+    estimated_delta = (0.03 * scale_base * keyword_score) + (0.02 * scale_base * signal_score)
+    projected_profit = round(base_profit + estimated_delta, 2)
+    profit_boost = round(projected_profit - base_profit, 2)
+    final_verdict = "PROCEED" if profit_boost >= 0 else "AVOID"
+
+    can_handle_traffic = foot_intensity <= 85 and "heavy" not in traffic.lower()
+    if foot_intensity > 85 or "heavy" in traffic.lower():
+        bottleneck_risk = "High"
+    elif foot_intensity > 70:
+        bottleneck_risk = "Moderate"
+    else:
+        bottleneck_risk = "Low"
+
+    target_audience = merchant_data.get("target_audience", {})
+    segment_rows: List[Tuple[str, float]] = []
+    if isinstance(target_audience, dict):
+        for key, value in target_audience.items():
+            pct = _to_float(value, 0.0)
+            if pct > 0:
+                segment_rows.append((str(key).strip() or "General", pct))
+
+    if not segment_rows:
+        segment_rows = [("Students", 30.0), ("Office Workers", 30.0), ("Families", 20.0), ("Tourists", 20.0)]
+
+    segment_rows.sort(key=lambda item: item[1], reverse=True)
+    segment_rows = segment_rows[:4]
+
+    swarm_behavior: List[Dict[str, Any]] = []
+    for segment, pct in segment_rows:
+        if final_verdict == "PROCEED":
+            reaction = f"{segment} show positive intent for this scenario if execution quality stays high."
+            churn_risk = "Low" if pct >= 25 else "Medium"
+        else:
+            reaction = f"{segment} are likely to delay purchases unless the offer is tightened and priced better."
+            churn_risk = "High" if pct >= 25 else "Medium"
+
+        if foot_intensity < 40 and churn_risk == "Low":
+            churn_risk = "Medium"
+        if "heavy" in traffic.lower() and churn_risk == "Medium":
+            churn_risk = "High"
+
+        swarm_behavior.append(
+            {
+                "segment": segment,
+                "reaction": reaction,
+                "churn_risk": churn_risk,
+            }
+        )
+
+    simulation_summary = (
+        f"Fallback simulation used because the live model did not return usable text. "
+        f"Signals show foot traffic at {int(round(foot_intensity))}/100 with {int(round(competitors))} nearby competitors and traffic '{traffic}'."
+    )
+
+    return {
+        "simulation_summary": simulation_summary,
+        "financial_analysis": {
+            "baseline_estimated_profit": base_profit,
+            "projected_new_profit": projected_profit,
+            "profit_boost": profit_boost,
+            "final_verdict": final_verdict,
+        },
+        "operational_impact": {
+            "can_handle_traffic": can_handle_traffic,
+            "bottleneck_risk": bottleneck_risk,
+            "operational_notes": "Monitor prep-time and queue length during peak windows; adjust staffing if demand spikes.",
+        },
+        "swarm_behavior": swarm_behavior,
+        "signal_references": [
+            f"weather={weather}",
+            f"traffic={traffic}",
+            f"foot_traffic={int(round(foot_intensity))}",
+            f"competitors={int(round(competitors))}",
+            f"scenario={scenario_text[:120]}",
+        ],
+    }
+
 @app.post("/swarm/simulate")
 def run_swarm_simulation(payload: SwarmSimulationRequest):
     try:
@@ -2438,82 +2841,122 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
                 "foot_traffic": {"data": {"live_intensity": 50}} # Safe default
             }
 
-        # 4. Dynamic Agent Count (Based on foot traffic)
-        foot_traffic_data = external_signals.get("foot_traffic", {}).get("data", {})
-        live_intensity = _to_float(foot_traffic_data.get("live_intensity") if isinstance(foot_traffic_data, dict) else 50.0, 50.0)
-        agent_count = max(10, min(50, int(live_intensity))) # Capped so JSON doesn't break
-
-        # 5. THE MASTER MICROFISH PROMPT (V1 + V2 Rules Combined)
+        # 5. LEAN MICROFISH PROMPT — 1 LLM call simulates all customer types
         system_prompt = (
-            "You are the MicroFish Swarm Intelligence Engine and Financial Auditor. "
-            "Your job is to simulate a hyper-realistic multi-agent market response to a business scenario.\n\n"
-            "CRITICAL RULES:\n"
-            "1. AGENT DISTRIBUTION: You must spawn exactly " + str(agent_count) + " individual virtual customer agents in the 'agents' array. Their roles must match the 'target_audience' JSON percentages.\n"
-            "2. CAPACITY CHECK: Compare the resulting foot traffic against 'operating_hours'. If traffic surges, determine if the shop bottlenecks (operational failure).\n"
-            "3. PROFIT OVER TRAFFIC: A promotion might bring 50% more traffic but lower net profit. Calculate the realistic financial impact based on 'pricing_tier'.\n"
-            "4. OUTPUT FORMAT: Return ONLY strict JSON. NO markdown fences.\n\n"
-            "JSON SCHEMA REQUIREMENT:\n"
-            "{\n"
-            "  \"simulation_summary\": \"A 2-sentence overview of the outcome.\",\n"
-            "  \"financial_analysis\": {\n"
-            "    \"baseline_estimated_profit\": 1500,\n"
-            "    \"projected_new_profit\": 1800,\n"
-            "    \"profit_boost\": 300,\n"
-            "    \"final_verdict\": \"PROCEED\"\n"
-            "  },\n"
-            "  \"operational_impact\": {\n"
-            "    \"can_handle_traffic\": true,\n"
-            "    \"bottleneck_risk\": \"Moderate\",\n"
-            "    \"operational_notes\": \"Kitchen will struggle during lunch rush due to the promotion.\"\n"
-            "  },\n"
-            "  \"swarm_behavior\": [\n"
-            "    { \"segment\": \"Students (40%)\", \"reaction\": \"Loved the discount.\", \"churn_risk\": \"Low\" }\n"
-            "  ],\n"
-            "  \"agents\": [\n"
-            "    {\"id\": 1, \"role\": \"Student\", \"trait\": \"Broke\", \"decision\": \"buy\", \"reason\": \"Too cheap to pass up.\"}\n"
-            "  ]\n"
-            "}"
+            "You are MicroFish, an F&B swarm-intelligence simulator. "
+            "Analyze the scenario using the merchant data and live signals. "
+            "Return ONLY valid JSON (no markdown) with these keys:\n"
+            "- simulation_summary: 2 sentences referencing the signal data\n"
+            "- financial_analysis: {baseline_estimated_profit, projected_new_profit, profit_boost, final_verdict: PROCEED/AVOID}\n"
+            "- operational_impact: {can_handle_traffic: bool, bottleneck_risk: Low/Moderate/High, operational_notes}\n"
+            "- swarm_behavior: array of audience segments [{segment, reaction, churn_risk: Low/Medium/High}]"
+
+            "CRITICAL INSTRUCTION:"
+            "1. You must mathematically evaluate the final projected profit.\n"
+            "2. If the projected profit is less than 0, you MUST output 'decision': 'Reject'. \n"
+            "3. Under NO circumstances should you approve or recommend a strategy that results in negative profit, regardless of qualitative benefits like brand exposure or customer acquisition."
         )
+
+        # Build compact context
+        fin_trend = financial_context.get("financial_trend", {})
+        diag = financial_context.get("diagnostic_patterns", {})
+        slim_fin = {
+            "rev": (fin_trend.get("target_month") or {}).get("total_revenue", 0),
+            "profit": (fin_trend.get("target_month") or {}).get("net_profit", 0),
+            "avg_rev": (fin_trend.get("rolling_averages") or {}).get("avg_revenue", 0),
+        }
+
+        # Scalar signals only
+        weather_raw = external_signals.get("weather", {}).get("data", {})
+        traffic_raw = external_signals.get("traffic", {}).get("data", {})
+        foot_raw = external_signals.get("foot_traffic", {}).get("data", {})
+        places_raw = (external_signals.get("places") or {}).get("data", {})
+        sigs = {
+            "weather": f"{weather_raw.get('condition', 'N/A')}, {weather_raw.get('temp_c', weather_raw.get('temp', 'N/A'))}°C" if isinstance(weather_raw, dict) else "N/A",
+            "traffic": traffic_raw.get("congestion_level", "N/A") if isinstance(traffic_raw, dict) else "N/A",
+            "foot_traffic": foot_raw.get("live_intensity", 50) if isinstance(foot_raw, dict) else 50,
+            "competitors": places_raw.get("nearby_food_venue_count", 0) if isinstance(places_raw, dict) else 0,
+        }
 
         user_prompt = (
-            f"--- THE SCENARIO ---\n\"{payload.scenario_prompt}\"\n\n"
-            f"--- MERCHANT FOUNDATION ---\n"
-            f"Type: {merchant_data.get('type')}\n"
-            f"Pricing Tier: {merchant_data.get('pricing_tier')}\n"
-            f"Operating Hours: {merchant_data.get('operating_hours')}\n"
-            f"Target Audience Mix: {json.dumps(merchant_data.get('target_audience', {}))}\n\n"
-            f"--- INTERNAL DATA (Includes 12-Month Historical Curve) ---\n{json.dumps(financial_context)}\n\n"
-            f"--- EXTERNAL SIGNALS (Traffic & Weather) ---\n{json.dumps(external_signals)}\n\n"
-            f"Run the simulation and return the pure JSON."
+            f"Scenario: \"{payload.scenario_prompt}\"\n"
+            f"Shop: {merchant_data.get('type')} | {merchant_data.get('pricing_tier')} | Hours: {merchant_data.get('operating_hours')}\n"
+            f"Audience: {json.dumps(merchant_data.get('target_audience', {}))}\n"
+            f"Financials: {json.dumps(slim_fin)}\n"
+            f"Signals: {json.dumps(sigs)}\n"
+            f"JSON only."
         )
 
-        # 6. Call LLM & Parse (Temp 0.4 for V2's requested "realistic chaos")
-        # ILMU glm-5.1 call path is handled inside _call_text_llm.
-        raw_json_response = _call_text_llm(None, system_prompt, user_prompt, temperature=0.4)
-        simulation_data = _parse_model_json(raw_json_response, source_name="Simulation model", required_kind="object")
+        # 6. Call LLM — with deterministic local fallback if provider returns empty output
+        engine = "ilmu"
+        fallback_reason = ""
+        try:
+            raw_json_response = _call_text_llm(None, system_prompt, user_prompt, temperature=0.4)
+            simulation_data = _parse_model_json(raw_json_response, source_name="Simulation model", required_kind="object")
+        except HTTPException as llm_exc:
+            engine = "local_fallback"
+            fallback_reason = str(llm_exc.detail)
+            print(f"[Swarm Fallback] {fallback_reason}")
+            simulation_data = _build_local_swarm_fallback(payload.scenario_prompt, slim_fin, sigs, merchant_data)
 
-        # 7. Extract UI Stats safely
-        raw_agents = simulation_data.get("agents", [])
-        if not isinstance(raw_agents, list):
-            raw_agents = []
+        # 7. Sanity-check the verdict — LLM sometimes says PROCEED despite negative financials
+        financials = simulation_data.get("financial_analysis", {})
+        if isinstance(financials, dict):
+            profit_boost = _to_float(financials.get("profit_boost"), 0.0)
+            llm_verdict = str(financials.get("final_verdict", "")).strip().upper()
+            # Override: can't PROCEED if the scenario loses money
+            if profit_boost < 0 and llm_verdict == "PROCEED":
+                financials["final_verdict"] = "AVOID"
+                print(f"[Verdict Override] LLM said PROCEED but profit_boost={profit_boost:.2f} — overriding to AVOID")
+            simulation_data["financial_analysis"] = financials
 
-        total_buy = sum(1 for agent in raw_agents if isinstance(agent, dict) and str(agent.get("decision", "")).strip().lower() == "buy")
-        total_pass = len(raw_agents) - total_buy
+        # 8. Build synthetic agent dots from valid swarm_behavior segments only
+        swarm_behavior = simulation_data.get("swarm_behavior", [])
+        if not isinstance(swarm_behavior, list):
+            swarm_behavior = []
 
-        return {
+        # Filter out empty/invalid segments before building agents
+        valid_segments = [
+            seg for seg in swarm_behavior
+            if isinstance(seg, dict) and (seg.get("segment") or seg.get("reaction"))
+        ]
+
+        synthetic_agents = []
+        for i, seg in enumerate(valid_segments):
+            churn = str(seg.get("churn_risk", "")).lower()
+            decision = "pass" if churn == "high" else "buy"
+            synthetic_agents.append({
+                "id": i + 1,
+                "role": seg.get("segment", f"Segment {i+1}"),
+                "trait": seg.get("churn_risk", "Medium"),
+                "decision": decision,
+                "reason": seg.get("reaction", ""),
+            })
+
+        total_buy = sum(1 for a in synthetic_agents if a["decision"] == "buy")
+        total_pass = len(synthetic_agents) - total_buy
+
+        response_payload = {
             "status": "success",
+            "engine": engine,
             "scenario": payload.scenario_prompt,
             "summary": simulation_data.get("simulation_summary", ""),
             "financials": simulation_data.get("financial_analysis", {}),
             "operations": simulation_data.get("operational_impact", {}),
-            "swarm_behavior": simulation_data.get("swarm_behavior", []), # 👈 V2's group summaries
+            "swarm_behavior": swarm_behavior,
+            "signal_references": simulation_data.get("signal_references", []),
             "stats": {
-                "total_agents": len(raw_agents),
+                "total_agents": len(synthetic_agents),
                 "total_buy": total_buy,
                 "total_pass": total_pass
             },
-            "swarm_data": raw_agents # 👈 V1's individual dots
+            "swarm_data": synthetic_agents
         }
+
+        if fallback_reason:
+            response_payload["fallback_reason"] = fallback_reason
+
+        return response_payload
 
     except HTTPException:
         raise

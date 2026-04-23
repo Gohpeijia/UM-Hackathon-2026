@@ -52,6 +52,7 @@ h1, h2, h3, h4, h5, h6 {
 .text-red { color: var(--red-600); }
 .bg-blue { background-color: var(--blue-600); }
 .bg-green { background-color: var(--green-600); }
+.bg-red { background-color: var(--red-600); }
 
 /* --- App Layout --- */
 .app-container {
