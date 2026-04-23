@@ -376,7 +376,8 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
   const totalBuy = Number(stats.total_buy) || 0;
   const totalPass = Number(stats.total_pass) || 0;
   const buyRatePercent = totalAgents > 0 ? Math.round((totalBuy / totalAgents) * 100) : 0;
-  const verdict = String(financials.final_verdict || '').trim().toUpperCase() === 'ABORT' ? 'ABORT' : 'PROCEED';
+  const rawVerdict = String(financials.final_verdict || '').trim().toUpperCase();
+  const verdict = (rawVerdict === 'ABORT' || rawVerdict === 'AVOID') ? 'ABORT' : 'PROCEED';
   const verdictClass = verdict === 'ABORT' ? 'text-red' : 'text-green';
   const verdictStroke = verdict === 'ABORT' ? '#ef4444' : 'var(--green-600)';
 
@@ -388,20 +389,17 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
   const operationalRisk = operations.bottleneck_risk || 'Unknown';
   const operationalNotes = operations.operational_notes || 'No operational notes returned by the model.';
 
-  const reasoningCards = swarmBehavior.slice(0, 3).map((item, index) => ({
-    num: String(index + 1).padStart(2, '0'),
-    title: item.segment || `Segment ${index + 1}`,
-    desc: item.reaction || item.churn_risk || 'No additional segment details were returned.'
-  }));
+  // Only show segments that have real data — skip empty LLM segments
+  const reasoningCards = swarmBehavior
+    .filter(item => item && (item.segment || item.reaction))
+    .slice(0, 3)
+    .map((item, index) => ({
+      num: String(index + 1).padStart(2, '0'),
+      title: item.segment || `Segment ${index + 1}`,
+      desc: item.reaction || item.churn_risk || 'Segment responded to the scenario.'
+    }));
 
-  while (reasoningCards.length < 3) {
-    const index = reasoningCards.length + 1;
-    reasoningCards.push({
-      num: String(index).padStart(2, '0'),
-      title: `Segment ${index}`,
-      desc: 'Additional segment detail was not returned for this run.'
-    });
-  }
+  // Don't pad with fake segments — if the LLM returned fewer, show fewer
 
   const profitDeltaPercent = baselineProfit === 0
     ? 0
@@ -507,14 +505,14 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
                   label: 'Projected Profit',
                   val: formatCurrency(projectedProfit),
                   sub: `Baseline: ${formatCurrency(baselineProfit)}`,
-                  color: verdict === 'ABORT' ? 'blue' : 'green',
+                  color: projectedProfit < 0 ? 'red' : verdict === 'ABORT' ? 'blue' : 'green',
                   p: `${Math.max(8, Math.min(100, buyRatePercent))}%`
                 },
                 {
                   label: 'Profit Boost',
                   val: `${profitBoost >= 0 ? '+' : ''}${formatCurrency(profitBoost)}`,
                   sub: 'Scenario delta vs baseline',
-                  color: profitBoost >= 0 ? 'green' : 'blue',
+                  color: profitBoost >= 0 ? 'green' : 'red',
                   p: `${Math.max(10, Math.min(100, profitDeltaPercent))}%`
                 },
                 {

@@ -119,14 +119,50 @@ export const PERFORMANCE_SUMMARIES = {
   }
 };
 
-// Default summaries for other months
-MONTHS.forEach(m => {
+// Add 2026 months that the app actually uses
+PERFORMANCE_SUMMARIES['Apr 2026'] = {
+  headline: 'Q2 Opening Momentum',
+  subheadline: 'Revenue trajectory aligns with seasonal upswing and new campaign launch.',
+  insights: [
+    { id: '1', type: 'growth', title: 'Revenue Acceleration', message: 'Daily average revenue increased by 7.3% compared to March, driven by lunch-hour bundles.' },
+    { id: '2', type: 'anomaly', title: 'Midweek Dip Detected', message: 'Tuesday-Wednesday foot traffic dropped 15% — potential competitor promo overlap identified.' },
+    { id: '3', type: 'efficiency', title: 'Cost Optimization', message: 'Supplier renegotiation reduced procurement costs by 4.2%, improving net margin by RM320/week.' }
+  ],
+  score: '8.6'
+};
+
+PERFORMANCE_SUMMARIES['Mar 2026'] = {
+  headline: 'Steady Pre-Quarter Close',
+  subheadline: 'Operational metrics stable with emerging growth signals in afternoon traffic.',
+  insights: [
+    { id: '1', type: 'growth', title: 'Afternoon Surge', message: 'Tea-time orders (3-5 PM) grew 18% after introducing cold brew specials.' },
+    { id: '2', type: 'efficiency', title: 'Waste Reduction', message: 'Food waste decreased by 11% following the AI-recommended inventory adjustment.' },
+    { id: '3', type: 'anomaly', title: 'Weekend Volatility', message: 'Saturday revenue swings of ±22% suggest weather sensitivity — rain days correlate with 30% drop.' }
+  ],
+  score: '7.9'
+};
+
+PERFORMANCE_SUMMARIES['Feb 2026'] = {
+  headline: 'Post-CNY Normalization',
+  subheadline: 'Traffic returning to baseline after festive peak with healthy retention.',
+  insights: [
+    { id: '1', type: 'growth', title: 'Loyalty Retention', message: 'CNY promo customers showed 64% return rate, above the 45% industry average.' },
+    { id: '2', type: 'efficiency', title: 'Labour Efficiency', message: 'Staff scheduling optimization saved 12 labour-hours per week without impacting service.' },
+    { id: '3', type: 'growth', title: 'Menu Mix Shift', message: 'Hot beverages overtook cold drinks by 3:1 ratio, suggesting seasonal menu rotation opportunity.' }
+  ],
+  score: '8.1'
+};
+
+// Default summaries for any remaining months
+const ALL_MONTHS = [...MONTHS, 'Jan 2026', 'Feb 2026', 'Mar 2026', 'Apr 2026', 'May 2026', 'Jun 2026',
+  'Nov 2025', 'Dec 2025'];
+ALL_MONTHS.forEach(m => {
   if (!PERFORMANCE_SUMMARIES[m]) {
     PERFORMANCE_SUMMARIES[m] = {
       headline: `Operating Report: ${m}`,
       subheadline: 'Performance aligns with projected growth metrics.',
       insights: [
-        { id: '1', type: 'efficiency', title: 'Revenue variance', message: 'Revenue variance within expected 2% margin.' },
+        { id: '1', type: 'efficiency', title: 'Revenue Variance', message: 'Revenue variance within expected 2% margin.' },
         { id: '2', type: 'growth', title: 'Stable CSAT', message: 'Customer satisfaction levels remain stable at 4.6/5.' },
         { id: '3', type: 'efficiency', title: 'Supply Chain', message: 'Supply chain overheads decreased by 3% this period.' }
       ],
