@@ -1742,7 +1742,7 @@ def _resolve_merchant_id(supabase, frontend_id: str) -> str:
     if res2.data:
         return str(res2.data[0]["shop_id"])
         
-    raise Exception("Shop not found in DB. Please check your localStorage ID.")
+    raise HTTPException(status_code=404, detail="Shop not found in DB. Please check your localStorage ID.")
 
 @app.get("/boardroom/trend/{owner_id}/{target_month}")
 def get_monthly_trend(owner_id: str, target_month: str):
@@ -2414,7 +2414,6 @@ class SwarmSimulationRequest(BaseModel):
 def run_swarm_simulation(payload: SwarmSimulationRequest):
     try:
         supabase = get_supabase_client()
-        llm_client = get_zhipu_client()
         
         # 1. Resolve ID and fetch Merchant Foundation
         actual_merchant_id = _resolve_merchant_id(supabase, payload.merchant_id.strip())
@@ -2489,7 +2488,8 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
         )
 
         # 6. Call LLM & Parse (Temp 0.4 for V2's requested "realistic chaos")
-        raw_json_response = _call_text_llm(llm_client, system_prompt, user_prompt, temperature=0.4)
+        # ILMU glm-5.1 call path is handled inside _call_text_llm.
+        raw_json_response = _call_text_llm(None, system_prompt, user_prompt, temperature=0.4)
         simulation_data = _parse_model_json(raw_json_response, source_name="Simulation model", required_kind="object")
 
         # 7. Extract UI Stats safely
@@ -2515,6 +2515,8 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
             "swarm_data": raw_agents # 👈 V1's individual dots
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Swarm Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

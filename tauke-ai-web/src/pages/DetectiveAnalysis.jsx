@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './DetectiveAnalysis.css';
 import { 
   LayoutDashboard, 
@@ -128,6 +129,7 @@ const PerformanceSummaryList = ({ summary, month }) => (
 );
 
 export default function DetectiveAnalysis() {
+  const navigate = useNavigate();
   const [selectedMonth, setSelectedMonth] = useState(AVAILABLE_MONTHS[0]);
   const [intelligenceIndex, setIntelligenceIndex] = useState(0);
   const [isMonthDropdownOpen, setIsMonthDropdownOpen] = useState(false);
@@ -238,28 +240,6 @@ export default function DetectiveAnalysis() {
 
   return (
     <div className="dashboard-container">
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <h1 className="sidebar-logo">Tauke.AI</h1>
-          <p className="sidebar-tagline">SME Intelligence</p>
-        </div>
-        
-        <nav className="sidebar-nav">
-          <SidebarItem icon={Users} label="Onboarding" />
-          <SidebarItem icon={RefreshCcw} label="Data Sync" />
-          <SidebarItem icon={LayoutDashboard} label="Analysis" active />
-          <SidebarItem icon={MessageSquare} label="Clarification" />
-          <SidebarItem icon={ShieldAlert} label="War Room" />
-        </nav>
-
-        <div style={{ padding: '0 16px' }}>
-          <button className="upgrade-btn">
-            <ArrowUpRight className="w-4 h-4" style={{ transform: 'rotate(45deg)' }} />
-            Upgrade Plan
-          </button>
-        </div>
-      </aside>
-
       <div className="main-content">
         <header className="top-app-bar">
           <div />
@@ -403,6 +383,22 @@ export default function DetectiveAnalysis() {
                 month={selectedMonth}
               />
             </div>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '24px 0 8px 0' }}>
+            <button
+              onClick={() => navigate('/ai-debate')}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '8px',
+                padding: '12px 24px', borderRadius: '12px',
+                background: 'var(--primary, #0058bc)', color: '#fff',
+                border: 'none', fontSize: '15px', fontWeight: 700,
+                cursor: 'pointer'
+              }}
+            >
+              <span>Continue to War Room</span>
+              <span className="material-symbols-outlined" style={{ fontSize: '20px' }} aria-hidden="true">arrow_forward</span>
+            </button>
           </div>
         </main>
       </div>
