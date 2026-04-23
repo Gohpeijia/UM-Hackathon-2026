@@ -357,12 +357,13 @@ const SimulationPage = ({ isRunning, errorMessage, onRetry, onBack, runId }) => 
     </div>
   );
 };
-// Extract the raw, individual agents from the backend
+
+
+const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
+  // Extract the raw, individual agents from the backend
   const rawAgents = Array.isArray(simulationResult?.swarm_data)
     ? simulationResult.swarm_data
     : [];
-
-const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
   const navigate = useNavigate();
   const [roadmapLoading, setRoadmapLoading] = useState(false);
   const [roadmapError, setRoadmapError] = useState('');
