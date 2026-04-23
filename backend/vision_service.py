@@ -19,6 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from supabase import Client, create_client
 
+from collections import defaultdict
+from datetime import datetime
+
 
 load_dotenv(find_dotenv())
 
@@ -749,7 +752,7 @@ def _call_text_llm(client: Any, system_prompt: str, user_prompt: str, temperatur
 
     if mode == "modern":
         response = sdk_client.chat.completions.create(
-            model="glm-4.7-flash",
+            model="glm-5.1",
             temperature=temperature,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -764,7 +767,7 @@ def _call_text_llm(client: Any, system_prompt: str, user_prompt: str, temperatur
 
     if mode == "legacy":
         response = sdk_client.model_api.invoke(
-            model="glm-4.7-flash",
+            model="glm-5.1",
             temperature=temperature,
             prompt=[
                 {"role": "system", "content": system_prompt},
@@ -1705,6 +1708,74 @@ def boardroom_start(payload: BoardroomStartRequest) -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Boardroom start failed: {exc}") from exc
 
+def _resolve_merchant_id(supabase, frontend_id: str) -> str:
+    # 1. Check if the frontend sent the Auth 'owner_id'
+    res = supabase.table("merchants").select("shop_id").eq("owner_id", frontend_id).execute()
+    if res.data:
+        return str(res.data[0]["shop_id"])
+    
+    # 2. Check if the frontend already sent the real 'shop_id'
+    res2 = supabase.table("merchants").select("shop_id").eq("shop_id", frontend_id).execute()
+    if res2.data:
+        return str(res2.data[0]["shop_id"])
+        
+    raise Exception("Shop not found in DB. Please check your localStorage ID.")
+
+@app.get("/boardroom/trend/{owner_id}/{target_month}")
+def get_monthly_trend(owner_id: str, target_month: str):
+    try:
+        supabase = get_supabase_client()
+        # Use your bulletproof resolver!
+        actual_merchant_id = _resolve_merchant_id(supabase, owner_id)
+        
+        # 1. Calculate the start and end of the month
+        start_date = f"{target_month}-01T00:00:00Z"
+        
+        # Quick hack to get the next month for the 'less than' query
+        year, month = map(int, target_month.split('-'))
+        if month == 12:
+            end_date = f"{year + 1}-01-01T00:00:00Z"
+        else:
+            end_date = f"{year}-{month + 1:02d}-01T00:00:00Z"
+
+        # 2. Fetch all sales for this specific month from your DB
+        res = supabase.table("sales_logs") \
+            .select("logged_at, price, quantity") \
+            .eq("merchant_id", actual_merchant_id) \
+            .gte("logged_at", start_date) \
+            .lt("logged_at", end_date) \
+            .execute()
+            
+        sales = res.data if res.data else []
+        
+        # 3. Group the revenue by Day
+        daily_revenue = defaultdict(float)
+        
+        for row in sales:
+            # Parse '2026-04-15T14:30:00Z' into a datetime object
+            dt = datetime.fromisoformat(row["logged_at"].replace("Z", "+00:00"))
+            
+            # Format as "15 Apr" for the Recharts X-Axis
+            day_str = dt.strftime("%d %b").lstrip("0") 
+            
+            # Add (Price * Quantity) to that specific day
+            daily_revenue[day_str] += float(row["price"] * row["quantity"])
+
+        # 4. Format exactly how Recharts expects it: [{"name": "1 Apr", "revenue": 150}, ...]
+        trend_data = [{"name": day, "revenue": round(rev, 2)} for day, rev in daily_revenue.items()]
+        
+        # Sort it chronologically (Optional, but good if dates are out of order)
+        trend_data.sort(key=lambda x: int(x["name"].split(" ")[0]))
+
+        return {
+            "status": "success",
+            "trend_data": trend_data
+        }
+        
+    except Exception as e:
+        print(f"Trend Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/boardroom/continue")
 def boardroom_continue(payload: BoardroomContinueRequest) -> Dict[str, Any]:
@@ -2273,14 +2344,18 @@ def analyze_monthly_patterns(payload: AnalyzeMonthRequest):
     
     total_revenue = sum([row["price"] * row["quantity"] for row in sales_res.data]) if sales_res.data else 0.0
     
-    # 2. 🚀 THE REAL FIX: Fetch the actual costs uploaded by the Vision LLM 🚀
-    summary_res = supabase.table("monthly_summaries").select("total_fixed_costs, total_ingredient_costs").eq("merchant_id", actual_shop_id).eq("report_month", report_month).limit(1).execute()
+    # 2. 🚀 THE REAL FIX: Fetch the actual costs AND revenue uploaded by the Vision LLM 🚀
+    summary_res = supabase.table("monthly_summaries").select("total_revenue, total_fixed_costs, total_ingredient_costs").eq("merchant_id", actual_shop_id).eq("report_month", report_month).limit(1).execute()
     
     total_fixed_costs = 0.0
     total_ingredient_costs = 0.0
     
     if summary_res.data:
         existing_summary = summary_res.data[0]
+        # 👈 NEW: Check if the AI already extracted a P&L revenue. If yes, override the CSV revenue!
+        if existing_summary.get("total_revenue") and existing_summary.get("total_revenue") > 0:
+            total_revenue = existing_summary.get("total_revenue")
+            
         # Use .get() with a fallback to 0.0 in case the AI couldn't find any expenses
         total_fixed_costs = existing_summary.get("total_fixed_costs") or 0.0
         total_ingredient_costs = existing_summary.get("total_ingredient_costs") or 0.0
@@ -2304,6 +2379,110 @@ def analyze_monthly_patterns(payload: AnalyzeMonthRequest):
     _fetch_diagnostic_patterns(supabase, actual_shop_id, report_month)
 
     return {"status": "success", "message": "Analysis complete!"}
+
+class SwarmSimulationRequest(BaseModel):
+    merchant_id: str
+    scenario_prompt: str
+
+# ---------------------------------------------------------
+# 3. SWARM SIMULATION ENGINE (MICROFISH)
+# ---------------------------------------------------------
+@app.post("/swarm/simulate")
+def run_swarm_simulation(payload: SwarmSimulationRequest):
+    try:
+        supabase = get_supabase_client()
+        actual_merchant_id = _resolve_merchant_id(supabase, payload.merchant_id.strip())
+        
+        # 1. Fetch Merchant Foundation (Identity & Target Audience)
+        merch_res = supabase.table("merchants").select("shop_name, type, operating_hours, pricing_tier, target_audience").eq("id", actual_merchant_id).execute()
+        if not merch_res.data:
+            raise HTTPException(status_code=404, detail="Merchant details missing.")
+        merchant_data = merch_res.data[0]
+
+        # 2. Fetch 1-Year Historical Patterns
+        hist_res = supabase.table("monthly_summaries").select("report_month, total_revenue, net_profit").eq("merchant_id", actual_merchant_id).order("report_month").limit(12).execute()
+        historical_data = hist_res.data if hist_res.data else "No historical data available."
+
+        # 3. Inject External API Mocks (BestTime Traffic & Neighborhood)
+        try:
+            # Call your existing real endpoint/function directly.
+            # (If fetch_external_signals is in agent_tools.py, make sure you imported it at the top!)
+            real_signals = fetch_external_signal(actual_merchant_id)
+            
+            # Note: If your fetch_external_signal endpoint returns a dict like {"status": "success", "data": {...}}
+            # you want to pass just the raw data to the AI. Adjust the .get() if your return format is different.
+            external_signals = real_signals.get("data", real_signals)
+
+            """
+            # ALTERNATIVE: If you prefer to call them individually, you can do this instead:
+            # (Assuming your merchant table has lat/lng or you fetch it here)
+            # merchant_lat = merchant_data.get("latitude")
+            # merchant_lng = merchant_data.get("longitude")
+            # traffic = fetch_foot_traffic(actual_merchant_id)
+            # surroundings = analyze_surrounding(merchant_lat, merchant_lng)
+            # external_signals = { "traffic": traffic, "neighborhood": surroundings }
+            """
+
+        except Exception as api_error:
+            print(f"Warning: Real APIs failed during simulation - {api_error}")
+            # CRITICAL HACKATHON SAFEGUARD: 
+            # If BestTime or Google API rate-limits you or times out during the live demo, 
+            # this prevents the Swarm from crashing!
+            external_signals = {
+                "warning": "Real-time signals temporarily unavailable. Proceeding with baseline merchant data."
+            }
+
+        # 4. Generate the Swarm via Zhipu AI
+        llm_client = _get_llm_client()
+        
+        system_prompt = (
+            "You are the MicroFish Swarm Intelligence Engine. Your job is to simulate a hyper-realistic multi-agent market response to a business scenario. \n"
+            "CRITICAL RULES:\n"
+            "1. AGENT DISTRIBUTION: You must spawn simulated agents strictly matching the merchant's 'target_audience' JSON percentages.\n"
+            "2. PERSONALITIES: Assign high-variance, distinctly different personalities even within the same demographic (e.g., brand-loyal vs. price-sensitive).\n"
+            "3. CAPACITY CHECK: Compare the resulting foot traffic against the 'operating_hours' and 'besttime_traffic_peak'. If traffic surges, determine if the shop bottlenecks (operational failure).\n"
+            "4. PROFIT OVER TRAFFIC: A promotion might bring 50% more traffic but lower net profit. Calculate the realistic financial impact based on 'pricing_tier'.\n\n"
+            "RETURN ONLY STRICT JSON in this format:\n"
+            "{\n"
+            "  \"simulation_summary\": \"A 2-sentence overview of the outcome\",\n"
+            "  \"financial_impact\": {\n"
+            "    \"projected_traffic_change_pct\": 0.0,\n"
+            "    \"projected_profit_change_pct\": 0.0,\n"
+            "    \"profitability_verdict\": \"Highly Profitable | Break-even | Loss-Making\"\n"
+            "  },\n"
+            "  \"operational_impact\": {\n"
+            "    \"can_handle_traffic\": true/false,\n"
+            "    \"bottleneck_risk\": \"None | Moderate | Severe\",\n"
+            "    \"operational_notes\": \"Details on kitchen/staff capacity\"\n"
+            "  },\n"
+            "  \"swarm_behavior\": [\n"
+            "    { \"segment\": \"Students (40%)\", \"reaction\": \"Loved the discount, high conversion.\", \"churn_risk\": \"Low\" },\n"
+            "    { \"segment\": \"Professionals (60%)\", \"reaction\": \"Ignored it, prefer speed over price.\", \"churn_risk\": \"High\" }\n"
+            "  ]\n"
+            "}"
+        )
+
+        user_prompt = (
+            f"--- MERCHANT PROFILE ---\n{json.dumps(merchant_data)}\n\n"
+            f"--- HISTORICAL 1-YEAR FINANCIALS ---\n{json.dumps(historical_data)}\n\n"
+            f"--- EXTERNAL SIGNALS (Traffic & Neighborhood) ---\n{json.dumps(external_signals)}\n\n"
+            f"--- THE SCENARIO (PROMPT) ---\n\"{payload.scenario_prompt}\"\n\n"
+            "Run the 30-day swarm simulation now and return the JSON."
+        )
+
+        # Temperature 0.3 allows the AI to inject realistic chaos and variance
+        raw_json = _call_text_llm(llm_client, system_prompt, user_prompt, temperature=0.3)
+        simulation_results = _parse_model_json(raw_json)
+
+        return {
+            "status": "success",
+            "scenario": payload.scenario_prompt,
+            "results": simulation_results
+        }
+
+    except Exception as e:
+        print(f"Swarm Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
