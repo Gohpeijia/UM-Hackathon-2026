@@ -76,6 +76,7 @@ export default function CampaignRoadmap() {
   const [errorMsg, setErrorMsg] = useState(null);
 
   const ownerId = localStorage.getItem("owner_id");
+  const targetMonth = localStorage.getItem("target_month") || "2026-04";
   const chosenStrategy = (() => {
     try {
       return JSON.parse(localStorage.getItem("chosen_strategy") || "{}");
@@ -99,11 +100,9 @@ export default function CampaignRoadmap() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             merchant_id: ownerId,
-            target_month: "2026-04",
+            target_month: targetMonth,
             source: "BOARDROOM",
-            // strategy_text = the strategy title/copy
             strategy_text: chosenStrategy.strategy || chosenStrategy.copy || "Optimize business operations",
-            // justification = why the AI chose it
             justification: chosenStrategy.argument_for || chosenStrategy.copy || "Recommended by AI consensus",
             external_signals: {},
             financial_trend: {},

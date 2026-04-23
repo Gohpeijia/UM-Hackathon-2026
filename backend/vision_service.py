@@ -106,6 +106,10 @@ class LocationUpdateRequest(BaseModel):
     lon: Optional[float] = None
     place_id: Optional[str] = None
 
+class DetectiveCardsRequest(BaseModel):
+    merchant_id: str = Field(min_length=1)
+    target_month: str = Field(min_length=7)
+
 class GenerateRoadmapRequest(BaseModel):
     merchant_id: str = Field(min_length=1)
     target_month: str = Field(min_length=7)
@@ -398,7 +402,7 @@ def _render_pdf_pages_as_data_urls(file_bytes: bytes, max_pages: int = 5) -> Lis
 
 
 def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
-    """Call ZhipuAI glm-4.6v-flash vision model via direct HTTP API.
+    """Call ZhipuAI glm-5.1 vision model via direct HTTP API.
 
     The legacy SDK (v1.0.7) returns empty content for vision calls,
     so we bypass it and call the HTTP API directly with JWT auth.
@@ -428,56 +432,93 @@ def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
     except Exception as jwt_err:
         raise HTTPException(status_code=500, detail=f"Failed to sign ZhipuAI JWT: {jwt_err}")
 
-    # Call the vision model via direct HTTP
-    try:
-        response = requests.post(
-            "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "glm-4.6v-flash",
-                "temperature": 0.1,
-                "max_tokens": 4000,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "Read this document and return JSON only."},
-                            {"type": "image_url", "image_url": {"url": image_data_url}},
-                        ],
-                    },
-                ],
-            },
-            timeout=90,
-        )
+    # Call the vision model via direct HTTP with retry on 429 rate limits
+    import time as _time_mod
+    MAX_VISION_RETRIES = 3
+    last_exc = None
 
-        # Handle HTML error pages
-        content_type = response.headers.get("content-type", "")
-        if "text/html" in content_type:
-            raise Exception(f"ZhipuAI returned HTML error (HTTP {response.status_code})")
+    for attempt in range(1, MAX_VISION_RETRIES + 1):
+        try:
+            response = requests.post(
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "glm-5.1",
+                    "temperature": 0.1,
+                    "max_tokens": 4000,
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Read this document and return JSON only."},
+                                {"type": "image_url", "image_url": {"url": image_data_url}},
+                            ],
+                        },
+                    ],
+                },
+                timeout=90,
+            )
 
-        if not response.ok:
-            raise Exception(f"ZhipuAI vision HTTP {response.status_code}: {response.text[:300]}")
+            # Handle HTML error pages (e.g. gateway errors)
+            content_type = response.headers.get("content-type", "")
+            if "text/html" in content_type:
+                raise Exception(f"ZhipuAI returned HTML error (HTTP {response.status_code})")
 
-        data = response.json()
-        choices = data.get("choices")
-        if not isinstance(choices, list) or not choices:
-            raise HTTPException(status_code=502, detail=f"Vision model returned no choices: {data}")
+            # Handle 429 rate limit — wait and retry
+            if response.status_code == 429:
+                wait_s = 8 * attempt  # 8s, 16s, 24s
+                print(f"[Vision] ZhipuAI rate limited (429, attempt {attempt}/{MAX_VISION_RETRIES}). Waiting {wait_s}s...")
+                _time_mod.sleep(wait_s)
+                # Rebuild JWT since it's time-based
+                now_ms = int(_time_mod.time() * 1000)
+                payload_jwt["exp"] = now_ms + 300_000
+                payload_jwt["timestamp"] = now_ms
+                token = jwt.encode(payload_jwt, api_secret, algorithm="HS256", headers={"alg": "HS256", "sign_type": "SIGN"})
+                last_exc = Exception(f"ZhipuAI vision HTTP 429 (rate limited): {response.text[:200]}")
+                continue
 
-        raw_text = _extract_model_text(choices[0].get("message", {}).get("content", ""))
+            if not response.ok:
+                raise Exception(f"ZhipuAI vision HTTP {response.status_code}: {response.text[:300]}")
 
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"ZhipuAI vision request failed: {exc}",
-        ) from exc
+            data = response.json()
 
-    return _parse_model_json(raw_text, source_name="Vision model")
+            # Check for API-level error codes (e.g. 1305 = rate limit in body)
+            if "error" in data:
+                err_code = data["error"].get("code", "")
+                err_msg = data["error"].get("message", "")
+                if str(err_code) in ("1305", "1301", "1302"):
+                    wait_s = 10 * attempt
+                    print(f"[Vision] ZhipuAI error {err_code} (attempt {attempt}/{MAX_VISION_RETRIES}). Waiting {wait_s}s...")
+                    _time_mod.sleep(wait_s)
+                    last_exc = Exception(f"ZhipuAI vision error {err_code}: {err_msg}")
+                    continue
+                raise Exception(f"ZhipuAI vision API error {err_code}: {err_msg}")
+
+            choices = data.get("choices")
+            if not isinstance(choices, list) or not choices:
+                raise HTTPException(status_code=502, detail=f"Vision model returned no choices: {data}")
+
+            raw_text = _extract_model_text(choices[0].get("message", {}).get("content", ""))
+            return _parse_model_json(raw_text, source_name="Vision model")
+
+        except HTTPException:
+            raise
+        except Exception as exc:
+            last_exc = exc
+            if attempt < MAX_VISION_RETRIES:
+                _time_mod.sleep(5 * attempt)
+                continue
+            break
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"ZhipuAI vision request failed after {MAX_VISION_RETRIES} attempts: {last_exc}",
+    )
+
 
 
 
@@ -1041,13 +1082,46 @@ def _call_text_llm(
                 continue
             break
 
-    # All retries exhausted
-    raise HTTPException(
-        status_code=502,
-        detail=f"ILMU text model request failed after {max_retries + 1} attempts: {last_error}",
-    )
+    # All retries exhausted - FALLBACK TO ZHIPU via async invoke (legacy SDK compatible)
+    print(f"[ILMU Failed] Falling back to Zhipu natively due to: {last_error}")
+    try:
+        if isinstance(client, dict):
+            zhipu_client = client.get("client")
+        else:
+            zhipu_client = client
 
+        if not zhipu_client:
+            raise Exception("No Zhipu client available for fallback")
 
+        # Use async invoke which works with legacy SDK 1.0.7
+        combined_prompt = f"System: {system_prompt}\n\nUser: {user_prompt}"
+        response = zhipu_client.model_api.async_invoke(
+            model="glm-5.1",
+            prompt=[{"role": "user", "content": combined_prompt}],
+            temperature=min(temperature, 0.9)
+        )
+        task_id = response.get("data", {}).get("task_id", "")
+        if not task_id:
+            raise Exception(f"Zhipu async_invoke failed - no task_id: {response}")
+
+        # Poll for result
+        import time as _time
+        for _ in range(30):
+            _time.sleep(2)
+            result = zhipu_client.model_api.query_async_invoke_result(task_id)
+            task_status = result.get("data", {}).get("task_status", "")
+            if task_status == "SUCCESS":
+                choices = result.get("data", {}).get("choices", [])
+                raw_text = choices[0].get("content", "") if choices else ""
+                return _extract_model_text(raw_text)
+            elif task_status in ("FAILED", "EXPIRED"):
+                raise Exception(f"Zhipu async task {task_status}: {result}")
+        raise Exception("Zhipu async task timed out after 60 seconds")
+    except Exception as fallback_exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"ILMU failed and Zhipu fallback also failed: {fallback_exc} (Original ILMU error: {last_error})",
+        )
 def _get_previous_month(month_str: str) -> str:
     dt = datetime.strptime(f"{month_str}-01", "%Y-%m-%d")
     if dt.month == 1:
@@ -1576,6 +1650,40 @@ def _fetch_external_signals(supabase: Client, merchant_id: str, merchant_profile
         "foot_traffic": foot_traffic, # 👈 NEW!
     }
 
+def _detective_cards_prompt(
+    target_month: str,
+    diagnostic_patterns: Dict[str, Any],
+    external_signals: Dict[str, Any],
+) -> Tuple[str, str]:
+    system_prompt = (
+        "You are an AI Business Analyst. Synthesize the provided financial diagnostics and external signals into a concise UI data structure. "
+        "Return ONLY pure, valid JSON in the exact structure below. Do not include markdown fences or any explanation.\n\n"
+        "{\n"
+        "  \"performance_summary\": {\n"
+        "    \"score\": 8.5,\n"
+        "    \"headline\": \"Short 3-5 word headline\",\n"
+        "    \"subheadline\": \"1 sentence summary of performance\",\n"
+        "    \"insights\": [\n"
+        "      {\"id\": 1, \"type\": \"growth\", \"title\": \"Short Title\", \"message\": \"Brief insight about revenue/growth.\"},\n"
+        "      {\"id\": 2, \"type\": \"alert\", \"title\": \"Short Title\", \"message\": \"Brief insight about drops or risks.\"},\n"
+        "      {\"id\": 3, \"type\": \"efficiency\", \"title\": \"Short Title\", \"message\": \"Brief insight about costs/margins.\"}\n"
+        "    ]\n"
+        "  },\n"
+        "  \"external_intelligence\": [\n"
+        "    {\"id\": 1, \"title\": \"Competitor/Event Name\", \"trend\": \"up\", \"percentage\": \"5%\", \"progress\": 60, \"content\": \"Brief description mapping signal to sales.\"}\n"
+        "  ] // Max 3 items in external_intelligence\n"
+        "}\n\n"
+        "Notes: 'type' must be 'growth', 'alert', or 'efficiency'. 'trend' must be 'up' or 'down'. 'progress' is 0-100."
+    )
+    user_prompt = (
+        f"Target Month: {target_month}\n\n"
+        "Diagnostics:\n"
+        f"{json.dumps(diagnostic_patterns, indent=2)}\n\n"
+        "External Signals:\n"
+        f"{json.dumps(external_signals, indent=2)}"
+    )
+    return system_prompt, user_prompt
+
 
 def _analyst_interrogation_prompt(financial_context: Dict[str, Any]) -> Tuple[str, str]:
     system_prompt = (
@@ -1967,6 +2075,45 @@ def process_monthly_upload(payload: ProcessMonthlyUploadRequest) -> Dict[str, An
     }
 
 
+@app.post("/boardroom/detective-cards")
+def boardroom_detective_cards(payload: DetectiveCardsRequest) -> Dict[str, Any]:
+    try:
+        merchant_id = payload.merchant_id.strip()
+        target_month = _normalize_report_month(payload.target_month)
+        supabase = get_supabase_client()
+        
+        # 1. Fetch exact merchant ID
+        actual_shop_id = _resolve_merchant_id(supabase, merchant_id)
+        
+        # 2. Fetch Diagnostic Patterns
+        diagnostic_patterns = _fetch_diagnostic_patterns(supabase, actual_shop_id, target_month)
+        
+        # 3. Fetch External Signals
+        merchant_profile = _fetch_merchant_profile(supabase, actual_shop_id)
+        external_signals = _fetch_external_signals(supabase, actual_shop_id, merchant_profile, target_month)
+        
+        # 4. Generate Cards via LLM
+        sys_prompt, usr_prompt = _detective_cards_prompt(target_month, diagnostic_patterns, external_signals)
+        llm_client = get_zhipu_client()
+        
+        # 5. We use temperature 0.1 for high determinism since it's formatting JSON
+        raw_output = _call_text_llm(llm_client, sys_prompt, usr_prompt, temperature=0.1)
+        parsed_cards = _parse_model_json(raw_output, source_name="Detective Cards", required_kind="object")
+        
+        # Ensure default structure if AI missed something
+        if "performance_summary" not in parsed_cards:
+            parsed_cards["performance_summary"] = {"score": 0, "headline": "Data Unavailable", "subheadline": "Could not generate summary.", "insights": []}
+        if "external_intelligence" not in parsed_cards:
+            parsed_cards["external_intelligence"] = []
+            
+        return {
+            "status": "success",
+            "data": parsed_cards
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/boardroom/start")
 def boardroom_start(payload: BoardroomStartRequest) -> Dict[str, Any]:
     try:
@@ -2142,87 +2289,100 @@ def boardroom_continue(payload: BoardroomContinueRequest) -> Dict[str, Any]:
 class BoardroomDebateRequest(BaseModel):
     merchant_id: str = Field(min_length=1)
     target_month: str = Field(min_length=7)
-    proposed_strategies: str = Field(min_length=1)
-    merchant_profile: str = Field(default="")
-    external_signals: Dict[str, Any] = Field(default_factory=dict)
-    financial_trend: Dict[str, Any] = Field(default_factory=dict) # Financial trends related to the debate
-    
-    # 👇 NEW: Catching the Internal Signals!
-    diagnostic_patterns: Dict[str, Any] = Field(default_factory=dict)
-    approved_theory: str = Field(default="")
+    boss_answers: str = Field(default="")
 
 @app.post("/boardroom/debate")
 def boardroom_debate(payload: BoardroomDebateRequest) -> Dict[str, Any]:
     try:
+        merchant_id = payload.merchant_id.strip()
+        target_month = _normalize_report_month(payload.target_month)
+        boss_answers = payload.boss_answers.strip() or "No additional context provided."
+
+        supabase = get_supabase_client()
         llm_client = get_zhipu_client()
 
-        financial_trend = payload.financial_trend
-        if not isinstance(financial_trend, dict) or not financial_trend:
-            try:
-                supabase = get_supabase_client()
-                target_month = _normalize_report_month(payload.target_month)
-                financial_trend = _fetch_financial_trend(supabase, payload.merchant_id.strip(), target_month)
-            except Exception:
-                financial_trend = {}
+        # 1. Fetch Context (no LLM calls yet)
+        financial_context = _build_financial_context_payload(supabase, merchant_id, target_month)
+        financial_trend = financial_context.get("financial_trend", {})
+        diagnostic_json = financial_context.get("diagnostic_patterns", {})
+        merchant_profile = _fetch_merchant_profile(supabase, merchant_id)
+        external_signals = _fetch_external_signals(supabase, merchant_id, merchant_profile, target_month)
 
-        user_prompt = (
-            f"--- BUSINESS CONTEXT ---\n"
-            f"Merchant Profile: {payload.merchant_profile}\n\n"
-            
-            f"--- INTERNAL SIGNALS ---\n"
-            f"Financial Trend JSON: {json.dumps(financial_trend, indent=2)}\n"
-            f"Diagnostic Data: {json.dumps(payload.diagnostic_patterns, indent=2)}\n"
-            f"Approved Business Theory (includes Boss's input): {payload.approved_theory}\n\n"
-            
-            f"--- EXTERNAL SIGNALS ---\n"
-            f"Real-World Data (Weather, Events, Competitors):\n"
-            f"{json.dumps(payload.external_signals, indent=2)}\n\n"
-            
-            f"--- THE TASK ---\n"
-            f"Here are the 3 proposed strategies to analyze:\n{payload.proposed_strategies}"
+        # ── LLM CALL #1: Generate 3 Strategies AND debate them in one shot ──
+        strategy_sys = (
+            "You are a board of AI advisors for an F&B business (CMO, COO, CFO). "
+            "Based on the provided financial data and boss's context, do two things in sequence:\n"
+            "PART A: Generate 3 distinct recovery strategies for the business.\n"
+            "PART B: Have CMO, COO, CFO each evaluate those 3 strategies in 1-2 sentences.\n\n"
+            "Output PURE JSON — no markdown, no backticks:\n"
+            "{\n"
+            "  \"cmo_opinion\": \"CMO's 2-sentence take on best strategy and why\",\n"
+            "  \"coo_opinion\": \"COO's 2-sentence take on best strategy and why\",\n"
+            "  \"cfo_opinion\": \"CFO's 2-sentence take on best strategy and why\",\n"
+            "  \"strategies_summary\": \"Brief 1-sentence overview of all 3 strategies considered\"\n"
+            "}"
         )
-        
-        # 1. Define the 3 distinct Agent personas
-        cmo_sys = "You are the CMO (Growth Hacker). Analyze the 3 strategies using the financial_trend plus diagnostic_patterns. Map item-level drops/spikes to external signals like weather and competitors. Pick the strategy with best demand upside and explain pros/cons in 2-3 conversational sentences."
-        coo_sys = "You are the COO (Kitchen Operations). Analyze the 3 strategies using diagnostic_patterns and external signals. Identify which strategy best handles real operational bottlenecks caused by the exact items/time blocks shifting in the data. Keep it conversational in 2-3 sentences."
-        cfo_sys = "You are the CFO (Risk Manager). Compare target_month against rolling_averages to determine above/below baseline. Use historical_curve to check if there are consecutive months of cash bleeding. Rank the 3 strategies by margin protection and downside risk in 2-3 sentences."
+        strategy_usr = (
+            f"Merchant: {merchant_profile}\n"
+            f"Target Month: {target_month}\n"
+            f"Boss Context: {boss_answers}\n"
+            f"Financial Diagnostics: {json.dumps(diagnostic_json, indent=2)[:2000]}\n"
+            f"Financial Trend: {json.dumps(financial_trend, indent=2)[:1000]}\n"
+            f"External Signals: {json.dumps(external_signals, indent=2)[:1000]}\n"
+            "Return the JSON."
+        )
+        opinions_raw = _call_text_llm(llm_client, strategy_sys, strategy_usr, temperature=0.3)
+        opinions = _parse_model_json(opinions_raw, source_name="Debate Opinions")
+        if not isinstance(opinions, dict):
+            opinions = {}
 
-        # 2. Run the 3 Agents IN PARALLEL (Massive speed boost!)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            future_cmo = executor.submit(_call_text_llm, llm_client, cmo_sys, user_prompt, 0.4)
-            future_coo = executor.submit(_call_text_llm, llm_client, coo_sys, user_prompt, 0.4)
-            future_cfo = executor.submit(_call_text_llm, llm_client, cfo_sys, user_prompt, 0.4)
-            
-            cmo_text = future_cmo.result()
-            coo_text = future_coo.result()
-            cfo_text = future_cfo.result()
+        cmo_text = opinions.get("cmo_opinion", "CMO recommends aggressive growth.")
+        coo_text = opinions.get("coo_opinion", "COO recommends phased rollout.")
+        cfo_text = opinions.get("cfo_opinion", "CFO recommends margin protection.")
+        strategies_summary = opinions.get("strategies_summary", "Three recovery strategies were evaluated.")
 
-        # 3. The "Final Boss" Synthesis
+        # ── LLM CALL #2: CEO synthesizes the final verdict as JSON ──
         boss_sys = (
-            "You are the CEO. Read your executives' opinions on the 3 strategies. "
-            "Base your final decision on long-term trend direction (rolling averages + historical curve), not one-month panic. "
-            "Select ONE strategy that best balances growth, operations, and finance, and explain why it wins."
+            "You are the CEO. Select ONE best strategy from the executives' opinions. "
+            "Output ONLY pure JSON (no markdown):\n"
+            "{\n"
+            "  \"strategies\": [\n"
+            "    {\"role\": \"Growth Hacker\", \"icon\": \"trending_up\", \"stance\": \"Aggressive Push\", \"copy\": \"<CMO opinion>\", \"indicatorLabel\": \"Impact\", \"indicatorValue\": \"+15%\", \"tone\": \"up\"},\n"
+            "    {\"role\": \"Risk Manager\", \"icon\": \"shield\", \"stance\": \"Margin Protection\", \"copy\": \"<CFO opinion>\", \"indicatorLabel\": \"Risk\", \"indicatorValue\": \"Low\", \"tone\": \"down\"},\n"
+            "    {\"role\": \"Operations Chief\", \"icon\": \"account_tree\", \"stance\": \"Phased Rollout\", \"copy\": \"<COO opinion>\", \"indicatorLabel\": \"Readiness\", \"indicatorValue\": \"Stable\", \"tone\": \"neutral\"}\n"
+            "  ],\n"
+            "  \"recommended_strategy\": {\n"
+            "    \"role\": \"Consensus\", \"strategy\": \"<winning strategy title>\", \"argument_for\": \"<why>\", \"argument_against\": \"<risk accepted>\", \"projected_profit_impact\": \"<e.g. +RM 1,200>\"\n"
+            "  }\n"
+            "}"
         )
-        boss_usr = f"CMO says:\n{cmo_text}\n\nCOO says:\n{coo_text}\n\nCFO says:\n{cfo_text}\n\nWhat is your final decision?"
-        
+        boss_usr = f"CMO: {cmo_text}\nCOO: {coo_text}\nCFO: {cfo_text}\nStrategies overview: {strategies_summary}\n\nReturn JSON."
         boss_text = _call_text_llm(llm_client, boss_sys, boss_usr, 0.2)
 
-        # 4. Stitch it together into the "Chat Bubble" JSON array for Next.js!
-        # Notice we don't need dangerous Regex anymore; we control the JSON directly!
-        debate_script = [
-            {"speaker": "CMO", "text": cmo_text},
-            {"speaker": "COO", "text": coo_text},
-            {"speaker": "CFO", "text": cfo_text},
-            {"speaker": "FINAL DECISION", "text": boss_text}
-        ]
-        
+        try:
+            parsed_data = _parse_model_json(boss_text, source_name="Debate JSON", required_kind="object")
+        except Exception:
+            parsed_data = {
+                "strategies": [
+                    {"role": "Growth Hacker", "icon": "trending_up", "stance": "Aggressive Push", "copy": cmo_text, "indicatorLabel": "Impact", "indicatorValue": "High", "tone": "up"},
+                    {"role": "Risk Manager", "icon": "shield", "stance": "Margin Protection", "copy": cfo_text, "indicatorLabel": "Risk", "indicatorValue": "Low", "tone": "down"},
+                    {"role": "Operations Chief", "icon": "account_tree", "stance": "Phased Rollout", "copy": coo_text, "indicatorLabel": "Readiness", "indicatorValue": "Stable", "tone": "neutral"}
+                ],
+                "recommended_strategy": {
+                    "role": "Consensus", "strategy": "Balanced Execution Strategy",
+                    "argument_for": cmo_text, "argument_against": cfo_text,
+                    "projected_profit_impact": "+RM 800"
+                }
+            }
+
         return {
             "status": "success",
-            "debate_script": debate_script
+            "strategies": parsed_data.get("strategies", []),
+            "recommended_strategy": parsed_data.get("recommended_strategy", {})
         }
-        
+
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Parallel debate generation failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Debate pipeline failed: {exc}") from exc
 
 @app.post("/sandbox/simulate-what-if")
 def simulate_what_if(payload: WhatIfSimulationRequest) -> Dict[str, Any]:

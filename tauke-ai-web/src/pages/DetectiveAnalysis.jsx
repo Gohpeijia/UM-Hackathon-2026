@@ -17,6 +17,8 @@ import {
   AlertCircle,
   Package
 } from 'lucide-react';
+import { EXTERNAL_INTELLIGENCE, PERFORMANCE_SUMMARIES } from './data';
+import { API_BASE_URL } from '../config'; 
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   AreaChart, 
@@ -27,8 +29,6 @@ import {
   Tooltip, 
   ResponsiveContainer
 } from 'recharts';
-import { EXTERNAL_INTELLIGENCE, PERFORMANCE_SUMMARIES } from './data';
-import { API_BASE_URL } from '../config'; 
 
 // 🚀 FIX 1: Overriding the old 2024 data.js import with fresh 2026 months
 const AVAILABLE_MONTHS = [
@@ -136,106 +136,95 @@ export default function DetectiveAnalysis() {
 
   const [chartData, setChartData] = useState([]);
   const [isLoadingChart, setIsLoadingChart] = useState(true);
-  
-  // 🚀 FIX 2: Safely grab the ownerId
+
+  // Dynamic card state
+  const [performanceSummary, setPerformanceSummary] = useState(null);
+  const [externalIntel, setExternalIntel] = useState([]);
+  const [isLoadingCards, setIsLoadingCards] = useState(true);
+
   const ownerId = localStorage.getItem("owner_id");
 
-  useEffect(() => {
-    const fetchRealTrend = async () => {
-      // Don't even try to fetch if we don't have an ID
-      if (!ownerId) {
-        setIsLoadingChart(false);
-        return;
-      }
-      
-      setIsLoadingChart(true);
-      try {
-        const targetMonth = getApiMonth(selectedMonth);
-        const response = await fetch(`${API_BASE_URL}/boardroom/trend/${ownerId}/${targetMonth}`);
-        const data = await response.json();
-        
-        if (data.status === "success") {
-            // 1. Figure out how many days are in the selected month
-            const [monthName, yearName] = selectedMonth.split(" ");
-            const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-            const monthIndex = months.indexOf(monthName);
-            const daysInMonth = new Date(parseInt(yearName), monthIndex + 1, 0).getDate();
-
-            // 2. Create a blank template for the whole month with 0 revenue
-            const fullMonthData = Array.from({ length: daysInMonth }, (_, i) => ({
-              name: `${i + 1} ${monthName}`,
-              revenue: 0
-            }));
-
-            // 3. Merge the actual backend data into our blank template
-            if (data.trend_data && Array.isArray(data.trend_data)) {
-                data.trend_data.forEach(realDay => {
-                  // Find the matching day in our template (e.g., "1 Mar")
-                  const index = fullMonthData.findIndex(d => d.name === realDay.name);
-                  if (index !== -1) {
-                    fullMonthData[index].revenue = realDay.revenue;
-                  }
-                });
-            }
-
-            // 4. Set the padded data into the chart!
-            setChartData(fullMonthData);
-        } else {
-            setChartData([]); // Reset on failure
-        }
-      } catch (error) {
-        console.error("Failed to fetch real chart data:", error);
-        setChartData([]);
-      } finally {
-        setIsLoadingChart(false);
-      }
-    };
-
-    fetchRealTrend();
-  }, [selectedMonth, ownerId]);
-
-  // 🚀 FIX 3: Bulletproof Month Translator
+  // 🚀 Month Translator helper
   const getApiMonth = (displayMonth) => {
     try {
       const [monthName, year] = displayMonth.split(" ");
       const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       const monthNumber = months.indexOf(monthName) + 1;
       const formattedMonth = monthNumber.toString().padStart(2, '0');
-      return `${year}-${formattedMonth}`; 
+      return `${year}-${formattedMonth}`;
     } catch (e) {
-      console.error("Failed to parse month string:", displayMonth);
-      return "2026-04"; // Safe fallback
+      return "2026-04";
     }
   };
 
   useEffect(() => {
-    const fetchRealTrend = async () => {
-      // Don't even try to fetch if we don't have an ID
-      if (!ownerId) {
-        setIsLoadingChart(false);
-        return;
-      }
-      
+    const apiMonth = getApiMonth(selectedMonth);
+    // Save selected month globally so War Room / Roadmap use the same month
+    localStorage.setItem("target_month", apiMonth);
+
+    if (!ownerId) {
+      setIsLoadingChart(false);
+      setIsLoadingCards(false);
+      return;
+    }
+
+    // Fetch chart trend
+    const fetchTrend = async () => {
       setIsLoadingChart(true);
       try {
-        const targetMonth = getApiMonth(selectedMonth);
-        const response = await fetch(`${API_BASE_URL}/boardroom/trend/${ownerId}/${targetMonth}`);
+        const response = await fetch(`${API_BASE_URL}/boardroom/trend/${ownerId}/${apiMonth}`);
         const data = await response.json();
-        
         if (data.status === "success") {
-            setChartData(data.trend_data);
+          const [monthName, yearName] = selectedMonth.split(" ");
+          const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+          const monthIndex = months.indexOf(monthName);
+          const daysInMonth = new Date(parseInt(yearName), monthIndex + 1, 0).getDate();
+          const fullMonthData = Array.from({ length: daysInMonth }, (_, i) => ({
+            name: `${i + 1} ${monthName}`, revenue: 0
+          }));
+          if (data.trend_data && Array.isArray(data.trend_data)) {
+            data.trend_data.forEach(realDay => {
+              const index = fullMonthData.findIndex(d => d.name === realDay.name);
+              if (index !== -1) fullMonthData[index].revenue = realDay.revenue;
+            });
+          }
+          setChartData(fullMonthData);
         } else {
-            setChartData([]); // Reset on failure
+          setChartData([]);
         }
       } catch (error) {
-        console.error("Failed to fetch real chart data:", error);
+        console.error("Failed to fetch chart data:", error);
         setChartData([]);
       } finally {
         setIsLoadingChart(false);
       }
     };
 
-    fetchRealTrend();
+    // Fetch AI detective cards
+    const fetchDetectiveCards = async () => {
+      setIsLoadingCards(true);
+      try {
+        const response = await fetch(`${API_BASE_URL}/boardroom/detective-cards`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ merchant_id: ownerId, target_month: apiMonth })
+        });
+        const json = await response.json();
+        if (json.status === "success" && json.data) {
+          if (json.data.performance_summary) setPerformanceSummary(json.data.performance_summary);
+          if (json.data.external_intelligence && json.data.external_intelligence.length > 0) {
+            setExternalIntel(json.data.external_intelligence);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to fetch detective cards:", err);
+      } finally {
+        setIsLoadingCards(false);
+      }
+    };
+
+    fetchTrend();
+    fetchDetectiveCards();
   }, [selectedMonth, ownerId]);
 
   return (
@@ -352,15 +341,27 @@ export default function DetectiveAnalysis() {
                 </div>
 
                 <div style={{ position: 'relative', flex: 1 }}>
-                  <AnimatePresence mode="wait">
-                    <IntelligenceCard key={EXTERNAL_INTELLIGENCE[intelligenceIndex].id} item={EXTERNAL_INTELLIGENCE[intelligenceIndex]} />
-                  </AnimatePresence>
-                  
-                  <div className="dot-carousel">
-                    {EXTERNAL_INTELLIGENCE.map((_, idx) => (
-                      <div key={idx} className={`dot ${idx === intelligenceIndex ? 'active' : ''}`} />
-                    ))}
-                  </div>
+                  {isLoadingCards ? (
+                    <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#0058bc', fontSize: '13px', fontWeight: 600 }}>
+                      AI is analyzing your market signals...
+                    </div>
+                  ) : externalIntel.length > 0 ? (
+                    <>
+                      <AnimatePresence mode="wait">
+                        <IntelligenceCard key={externalIntel[intelligenceIndex]?.id || intelligenceIndex} item={externalIntel[intelligenceIndex] || externalIntel[0]} />
+                      </AnimatePresence>
+                      <div className="dot-carousel">
+                        {externalIntel.map((_, idx) => (
+                          <div key={idx} className={`dot ${idx === intelligenceIndex ? 'active' : ''}`}
+                            onClick={() => setIntelligenceIndex(idx)} style={{ cursor: 'pointer' }} />
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <AnimatePresence mode="wait">
+                      <IntelligenceCard key={EXTERNAL_INTELLIGENCE[intelligenceIndex].id} item={EXTERNAL_INTELLIGENCE[intelligenceIndex]} />
+                    </AnimatePresence>
+                  )}
                 </div>
 
                 <div style={{ marginTop: '32px', backgroundColor: 'rgba(255,255,255,0.5)', padding: '16px', borderRadius: '12px', border: '1px solid #fff' }}>
@@ -368,18 +369,20 @@ export default function DetectiveAnalysis() {
                     Industry Pulse <span style={{ color: 'var(--primary)' }}>Real-time</span>
                   </div>
                   <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0, fontWeight: '500' }}>
-                    Tracking 12 local competitors and 5 global brands in your market segment.
+                    {externalIntel.length > 0
+                      ? `Tracking ${externalIntel.length} active market signal${externalIntel.length > 1 ? 's' : ''} in your area.`
+                      : 'Tracking 12 local competitors and 5 global brands in your market segment.'}
                   </p>
                 </div>
               </div>
 
-              <PerformanceSummaryList 
-                summary={PERFORMANCE_SUMMARIES[selectedMonth] || {
-                  headline: `Operating Report: ${selectedMonth}`,
-                  subheadline: 'Analyzing historical patterns and synthesizing insights...',
+              <PerformanceSummaryList
+                summary={performanceSummary ?? (PERFORMANCE_SUMMARIES[selectedMonth] || {
+                  headline: isLoadingCards ? 'AI is generating your performance summary...' : `Operating Report: ${selectedMonth}`,
+                  subheadline: isLoadingCards ? 'Please wait while we analyze your data.' : 'Analyzing historical patterns and synthesizing insights...',
                   insights: [],
                   score: 'N/A'
-                }} 
+                })}
                 month={selectedMonth}
               />
             </div>

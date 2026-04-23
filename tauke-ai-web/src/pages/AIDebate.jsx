@@ -60,6 +60,7 @@ export default function AIDebate() {
   const [isLoading, setIsLoading] = useState(true);
   const ownerId = localStorage.getItem("owner_id");
   const bossAnswers = localStorage.getItem("boss_answers");
+  const targetMonth = localStorage.getItem("target_month") || "2026-04";
 
   // ── Fetch live AI debate on mount ───────────────────────────────────────
   useEffect(() => {
@@ -70,7 +71,7 @@ export default function AIDebate() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             merchant_id: ownerId,
-            target_month: "2026-04",
+            target_month: targetMonth,
             boss_answers: bossAnswers || "No additional context provided."
           })
         });
