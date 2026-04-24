@@ -2580,6 +2580,10 @@ def generate_roadmap(payload: GenerateRoadmapRequest) -> Dict[str, Any]:
     try:
         supabase = get_supabase_client()
         llm_client = get_zhipu_client()
+        
+        # 🚀 FIX 1: Resolve the frontend's owner_id to the real database shop_id!
+        actual_shop_id = _resolve_merchant_id(supabase, payload.merchant_id)
+
         target_month: Optional[str] = None
         if isinstance(payload.target_month, str) and payload.target_month.strip():
             target_month = _normalize_report_month(payload.target_month)
@@ -2588,7 +2592,8 @@ def generate_roadmap(payload: GenerateRoadmapRequest) -> Dict[str, Any]:
 
         financial_trend = payload.financial_trend if isinstance(payload.financial_trend, dict) else {}
         if not financial_trend and target_month:
-            financial_trend = _fetch_financial_trend(supabase, payload.merchant_id, target_month)
+            # 🚀 FIX 2: Use actual_shop_id here
+            financial_trend = _fetch_financial_trend(supabase, actual_shop_id, target_month)
         elif not financial_trend:
             financial_trend = {
                 "mode": "simulation_only",
@@ -2597,7 +2602,8 @@ def generate_roadmap(payload: GenerateRoadmapRequest) -> Dict[str, Any]:
 
         diagnostic_patterns = payload.diagnostic_patterns if isinstance(payload.diagnostic_patterns, dict) else {}
         if not diagnostic_patterns and target_month:
-            diagnostic_patterns = _fetch_diagnostic_patterns(supabase, payload.merchant_id, target_month)
+            # 🚀 FIX 3: Use actual_shop_id here
+            diagnostic_patterns = _fetch_diagnostic_patterns(supabase, actual_shop_id, target_month)
         elif not diagnostic_patterns:
             diagnostic_patterns = {
                 "mode": "simulation_only",
@@ -2657,7 +2663,8 @@ def generate_roadmap(payload: GenerateRoadmapRequest) -> Dict[str, Any]:
         if payload.source == "BOARDROOM" and target_month:
             supabase.table("monthly_summaries").update({
                 "action_plan": json.dumps(roadmap_data) # Save the structured JSON
-            }).eq("merchant_id", payload.merchant_id).eq("report_month", target_month).execute()
+            # 🚀 FIX 4: Use actual_shop_id here!
+            }).eq("merchant_id", actual_shop_id).eq("report_month", target_month).execute()
 
         return {
             "status": "success",

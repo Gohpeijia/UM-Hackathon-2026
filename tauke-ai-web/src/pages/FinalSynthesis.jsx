@@ -173,17 +173,75 @@ export default function App() {
     setModalState(prev => ({ ...prev, isOpen: false }));
   };
 
-  const handleConfirmAction = () => {
-    closeModal();
-    // Save their exact choice to local storage!
-    if (selectedStrategy) {
-      localStorage.setItem("ceo_verdict", JSON.stringify(selectedStrategy));
+  const handleConfirmAction = async (strategy) => {
+    if (!strategy) {
+      closeModal();
+      return;
     }
-    navigate('/campaign-roadmap');
+
+    // 1. Immediately wipe any old roadmap data from previous simulations!
+    localStorage.removeItem("swarm_roadmap");
+    localStorage.removeItem("swarm_scenario");
+
+    // 2. Update the modal to show a loading state
+    setModalState(prev => ({
+      ...prev,
+      title: 'Generating Blueprint...',
+      content: (
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <div className="loading-spinner" style={{ margin: '0 auto 16px' }} />
+          <p>Translating the <strong>{strategy.title}</strong> strategy into an actionable AI roadmap...</p>
+        </div>
+      ),
+      onConfirmAction: null // Disable button while loading
+    }));
+
+    try {
+      const merchantId = localStorage.getItem("owner_id");
+      const targetMonth = localStorage.getItem("target_month");
+
+      // 3. Call your Roadmap API
+      const response = await fetch(`${API_BASE_URL}/roadmap/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          merchant_id: merchantId,
+          target_month: targetMonth,
+          strategy_text: strategy.description,
+          source: 'BOARDROOM',
+          justification: `Executive Decision: Proceeding with ${strategy.title} strategy. Risk Level: ${strategy.riskLevel}. Expected Growth: ${strategy.growth}.`,
+          financial_trend: {},
+          diagnostic_patterns: {},
+          external_signals: {}
+        })
+      });
+
+      const json = await response.json();
+
+      if (response.ok && json.status === "success") {
+        // 4. Overwrite the main shared keys so the roadmap page picks it up perfectly!
+        localStorage.setItem("ceo_verdict", JSON.stringify(strategy));
+        localStorage.setItem("swarm_roadmap", JSON.stringify(json.roadmap));
+        localStorage.setItem("swarm_scenario", `Executed Strategy: ${strategy.title}`);
+
+        closeModal();
+        navigate('/campaign-roadmap');
+      } else {
+        throw new Error(json.detail || "Failed to generate roadmap");
+      }
+    } catch (error) {
+      console.error("Roadmap generation error:", error);
+      setModalState(prev => ({
+        ...prev,
+        title: 'Generation Failed',
+        content: <p style={{ color: '#ef4444' }}>Failed to generate the roadmap. Please try again.</p>,
+        onConfirmAction: closeModal
+      }));
+    }
   };
 
   const handleExecute = (s) => {
-    setSelectedStrategy(s); // Save which one they clicked
+    setSelectedStrategy(s); // Keep this for anything else that might need it
     openModal(
       `Executing ${s.title} Campaign`,
       <>
@@ -194,7 +252,7 @@ export default function App() {
         <p>This path focuses on <span style={{ fontWeight: 600 }}>{s.growth} growth</span> with a
           <span style={{ color: s.accentColor, fontWeight: 700 }}> {s.riskLevel}</span> risk profile.</p>
       </>,
-      handleConfirmAction
+      () => handleConfirmAction(s) // <--- CRITICAL FIX: Pass 's' directly into the closure here
     );
   };
 
