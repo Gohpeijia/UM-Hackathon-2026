@@ -93,30 +93,6 @@ A typical user journey in Tauke.AI looks like this:
 
 ## 🏗️ Architecture & Tech Stack
 
-sequenceDiagram
-    autonumber
-    actor SME as F&B Owner
-    participant UI as Vercel (Frontend)
-    participant API as FastAPI (Backend)
-    participant DB as Supabase
-    participant AI as ZhipuAI / ILMU
-    participant Ext as External APIs
-
-    SME->>UI: Setup Profile & Upload CSV/PDFs
-    UI->>API: Send Files via Base64
-    API->>AI: Extract Financials (Vision AI)
-    AI-->>API: Structured JSON Output
-    API->>DB: Ingest Data & Sales Logs
-    SME->>UI: Request Strategy Debate
-    UI->>API: Trigger AI Boardroom
-    API->>AI: Multi-Agent Debate (CMO/CFO/COO)
-    AI-->>UI: Final CEO Synthesis & Options
-    SME->>UI: Run Swarm Simulation on Option
-    UI->>API: Trigger Swarm Engine
-    API->>Ext: Fetch Weather & Traffic Signals
-    API->>AI: Calculate 'What-If' Profit Boost
-    API-->>SME: Dynamic Execution Roadmap
-
 ### Frontend (`/tauke-ai-web`)
 A responsive single-page application built for speed and usability.
 
