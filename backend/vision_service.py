@@ -3284,26 +3284,42 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
 
 class BossContextRequest(BaseModel):
     merchant_id: str
-    target_month: str
+    target_month: Optional[str] = None 
     boss_context: str  
 
 @app.post("/boardroom/save-context")
-def boardroom_save_context(payload: BossContextRequest) -> Dict[str, Any]: # 👈 FIXED: Uses the correct Pydantic model
+def boardroom_save_context(payload: BossContextRequest) -> Dict[str, Any]:
     try:
         supabase = get_supabase_client()
         actual_shop_id = _resolve_merchant_id(supabase, payload.merchant_id.strip())
-        target_month = _normalize_report_month(payload.target_month)
 
-        # 👈 FIXED: Uses payload.boss_context to match what React sends
+        # 2. THE NEW LOGIC: Ask the database for the LATEST month that actually exists
+        latest_res = (
+            supabase.table("monthly_summaries")
+            .select("report_month")
+            .eq("merchant_id", actual_shop_id)
+            .order("report_month", desc=True) # Sort newest first
+            .limit(1)
+            .execute()
+        )
+
+        if not latest_res.data:
+            raise HTTPException(status_code=404, detail="No monthly summaries found for this shop.")
+
+        latest_month = latest_res.data[0]["report_month"]
+
+        # 3. Update that specific latest month with the Boss's answers
         res = (
             supabase.table("monthly_summaries")
             .update({"boss_context": payload.boss_context}) 
             .eq("merchant_id", actual_shop_id)
-            .eq("report_month", target_month)
+            .eq("report_month", latest_month)
             .execute()
         )
 
-        return {"status": "success", "message": "Context saved."}
+        return {"status": "success", "message": f"Context saved securely to {latest_month}."}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to save context: {exc}") from exc
     
