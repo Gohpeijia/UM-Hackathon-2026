@@ -1,3 +1,15 @@
+## Documentation Links
+
+SYSTEM ANALYSIS
+https://docs.google.com/document/d/1FfvnXahtFoN30gdM-X2rBpJsC6fhKJdiCv9yF5-KdqA/edit?usp=sharing
+
+Project Requirement Documentation(PRD)
+https://docs.google.com/document/d/12vXjSC-Bwpk2ehmE6o5UVHbLSxej_v228uBqamS9nXQ/edit?tab=t.0#heading=h.jhm8xwvnibu
+
+Sample Testing Analysis
+https://docs.google.com/document/d/1e7lKW19_NbXfJTjv-YRJSL82HZ9RWXGY/edit?pli=1
+
+
 # 🚀 Tauke.AI
 
 > **UM Hackathon 2026**  
@@ -18,6 +30,7 @@ Since our backend API is hosted on Render, the server may automatically go to sl
 Please allow around **30–50 seconds** for the server to spin up and return a healthy response.
 
 ---
+
 
 ## 📌 Problem
 
