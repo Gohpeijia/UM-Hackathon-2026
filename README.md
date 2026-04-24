@@ -96,7 +96,7 @@ Once a strategy is selected, Tauke.AI converts it into an actionable step-by-ste
 
 
 
-## 🧭 Demo Flow
+## 🗺️ User Journey
 
 A typical user journey in Tauke.AI looks like this:
 
@@ -110,6 +110,7 @@ A typical user journey in Tauke.AI looks like this:
 8. **Follow the generated execution roadmap**
 
 
+```mermaid
 sequenceDiagram
     autonumber
     actor User as F&B Owner
@@ -136,6 +137,9 @@ sequenceDiagram
     User->>F: Generate Final Roadmap
     F->>B: Synthesize Debate & Simulation Data
     B-->>User: Deliver Step-by-Step Actionable Campaign Roadmap
+```
+
+
 
 ---
 
