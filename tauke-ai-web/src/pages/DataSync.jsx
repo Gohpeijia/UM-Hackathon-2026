@@ -395,7 +395,7 @@ function SyncCard({ title, format, description, icon: Icon, isSynced, isUploadin
           )}
           {!rows && (
              <div className="sync-stat-row">
-               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}><FileText size={16} color="#717786" /> <span style={{ fontSize: '14px', fontWeight: 600 }}>Period Consistency</span></div>
+               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}><FileText size={16} color="#717786" /> <span style={{ fontSize: '14px', fontWeight: 600 }}>Document scanned</span></div>
                <CheckCircle2 size={16} color="#006e28" />
              </div>
           )}
