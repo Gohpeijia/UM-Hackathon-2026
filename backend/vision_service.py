@@ -454,7 +454,7 @@ def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
                     "Content-Type": "application/json",
                 },
                 json={
-                    "model": "glm-5.1",
+                    "model": "glm-4.6v-flash",
                     "temperature": 0.1,
                     "max_tokens": 4000,
                     "messages": [
@@ -2340,20 +2340,29 @@ def boardroom_synthesis(payload: SynthesisRequest) -> Dict[str, Any]:
 
         # The Prompt: Forcing the LLM to output exact JSON for your UI
         ceo_sys = (
-            "You are an AI synthesis engine for an F&B business. Review the board's debate, financial data, and boss context. "
-            "Generate exactly 3 strategic vectors (Aggressive, Hybrid Pivot, Defensive) and the comparative analysis metrics for a dashboard table.\n\n"
+            "You are an AI CEO synthesis engine for a Malaysian F&B business. Review the board's debate, financial data, and boss context. "
+            "Generate exactly 3 strategic vectors (Aggressive, Hybrid Pivot, Defensive) and comparative metrics.\n\n"
+            "🚨 CRITICAL RULE: NO CORPORATE BUZZWORDS. NO VAGUE ADVICE. 🚨\n"
+            "Do NOT write 'Launch a marketing campaign' or 'Cut costs' or 'Introduce new items'.\n"
+            "You MUST propose hyper-specific, actionable steps that a shop owner can execute tomorrow morning. "
+            "Invent specific context if needed based on their shop type (e.g., name a specific coffee, food item, exact RM price point, or specific day of the week).\n\n"
+            "Examples of Good vs Bad Descriptions:\n"
+            "BAD: 'Focus on cost reduction and operational efficiency.'\n"
+            "GOOD: 'Cut weekday operating hours by closing at 8 PM instead of 10 PM to save RM1,200 in monthly staff and TNB costs.'\n"
+            "BAD: 'Introduce new high-margin items to boost revenue.'\n"
+            "GOOD: 'Bundle your signature Iced Latte with the underperforming Butter Croissant for RM18 to instantly boost Average Order Value.'\n\n"
             "Output PURE JSON exactly matching this structure:\n"
             "{\n"
             "  \"strategies\": [\n"
-            "    {\"id\": \"aggressive\", \"title\": \"Aggressive Expansion\", \"description\": \"<2 sentences>\", \"growth\": \"<e.g. +140%>\", \"riskLevel\": \"HIGH RISK\"},\n"
-            "    {\"id\": \"hybrid\", \"title\": \"Hybrid Pivot\", \"description\": \"<2 sentences>\", \"growth\": \"<e.g. +85%>\", \"riskLevel\": \"OPTIMIZED\", \"recommended\": true},\n"
-            "    {\"id\": \"defensive\", \"title\": \"Defensive Consolidation\", \"description\": \"<2 sentences>\", \"growth\": \"<e.g. +20%>\", \"riskLevel\": \"CONSERVATIVE\"}\n"
+            "    {\"id\": \"aggressive\", \"title\": \"Aggressive Expansion\", \"description\": \"<2 hyper-specific, actionable sentences>\", \"growth\": \"<Generate realistic high % (e.g. +120%)>\", \"riskLevel\": \"HIGH RISK\"},\n"
+            "    {\"id\": \"hybrid\", \"title\": \"Hybrid Pivot\", \"description\": \"<2 hyper-specific, actionable sentences>\", \"growth\": \"<Generate realistic mid % (e.g. +65%)>\", \"riskLevel\": \"OPTIMIZED\", \"recommended\": true},\n"
+            "    {\"id\": \"defensive\", \"title\": \"Defensive Consolidation\", \"description\": \"<2 hyper-specific, actionable sentences>\", \"growth\": \"<Generate realistic low % (e.g. +15%)>\", \"riskLevel\": \"CONSERVATIVE\"}\n"
             "  ],\n"
             "  \"comparativeAnalysis\": {\n"
-            "    \"corePros\": {\"aggressive\": \"<Short text>\", \"hybrid\": \"<Short text>\", \"defensive\": \"<Short text>\"},\n"
-            "    \"riskFactors\": {\"aggressive\": \"<Short text>\", \"hybrid\": \"<Short text>\", \"defensive\": \"<Short text>\"},\n"
-            "    \"resourceDrain\": {\"aggressive\": 90, \"hybrid\": 55, \"defensive\": 20},\n"
-            "    \"probabilityOfSuccess\": {\"aggressive\": \"34%\", \"hybrid\": \"81%\", \"defensive\": \"94%\"}\n"
+            "    \"corePros\": {\"aggressive\": \"<e.g., Captures weekend crowd>\", \"hybrid\": \"<e.g., Balances AOV and traffic>\", \"defensive\": \"<e.g., Protects cash runway>\"},\n"
+            "    \"riskFactors\": {\"aggressive\": \"<e.g., High upfront ad spend>\", \"hybrid\": \"<e.g., Menu complexity>\", \"defensive\": \"<e.g., Losing market share>\"},\n"
+            "    \"resourceDrain\": {\"aggressive\": \"<Generate integer 80-100>\", \"hybrid\": \"<Generate integer 40-75>\", \"defensive\": \"<Generate integer 10-30>\"},\n"
+            "    \"probabilityOfSuccess\": {\"aggressive\": \"<Generate realistic % between 20-45%>\", \"hybrid\": \"<Generate realistic % between 60-85%>\", \"defensive\": \"<Generate realistic % between 85-99%>\"}\n"
             "  }\n"
             "}"
         )

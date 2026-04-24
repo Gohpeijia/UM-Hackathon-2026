@@ -89,13 +89,13 @@ const LandingPage = ({ onStart, value, onChange }) => {
         className="landing-content"
       >
         <div className="landing-header">
-          <span className="badge-v2">Simulation Hub V2</span>
+          <span className="badge-v2">Your Digital Safety Net</span>
           <h1 className="landing-title">
-            Simulate the Future <br />
-            <span className="text-blue">of Your SME.</span>
+            Stop Letting "What If?" <br />
+            <span className="text-blue">Hold Your Business Back.</span>
           </h1>
           <p className="landing-description">
-            Harness the power of high-fidelity AI simulations to forecast growth, optimize operations, and mitigate risks in real-time.
+            Every big decision carries risk. Run your ideas through our AI simulation engine to see exactly what happens—without losing a single Ringgit or scaring off your regulars.
           </p>
         </div>
 
@@ -116,6 +116,8 @@ const LandingPage = ({ onStart, value, onChange }) => {
             <motion.button
               whileHover={{ scale: 1.01 }}
               whileTap={{ scale: 0.98 }}
+              // CHANGE THIS URL to your actual analysis route!
+              // Example: navigate('/analysis') or navigate('/detective')
               onClick={() => navigate('/landing')}
               className="btn-auto-analyze"
             >
@@ -132,7 +134,7 @@ const LandingPage = ({ onStart, value, onChange }) => {
               <input
                 autoFocus
                 className="chat-input"
-                placeholder="Describe a business scenario..."
+                placeholder="What if I run a buy-1-free-1 promotion this weekend?..."
                 type="text"
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
@@ -250,7 +252,6 @@ const SimulationPage = ({ isRunning, errorMessage, onRetry, onBack, runId }) => 
   return (
     <div className="simulation-page">
       <header className="sim-header">
-        <div className="sim-logo">Atelier Sim</div>
         <div className="sim-nav-icons">
           <Settings className="nav-icon" size={24} />
           <User className="nav-icon" size={24} />
