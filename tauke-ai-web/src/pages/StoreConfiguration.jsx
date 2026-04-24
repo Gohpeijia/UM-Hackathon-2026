@@ -48,7 +48,7 @@ export default function StoreConfiguration() {
 
         if (data.status === "success" && data.profile) {
           const p = data.profile;
-          
+
           if (p.name) setStoreName(p.name);
           if (p.type) setBusinessType(p.type);
           if (p.pricing_tier) setPricingTier(p.pricing_tier);
@@ -129,53 +129,53 @@ export default function StoreConfiguration() {
   const handleSaveProfile = async () => {
     if (totalAllocation !== 100) return alert("Audience allocation must equal 100%.");
     setIsSaving(true);
-    
+
     const ownerId = localStorage.getItem("owner_id");
-    
+
     const targetAudienceData = {};
     audiences.forEach(aud => { targetAudienceData[aud.name] = aud.value; });
 
     const formattedHours = `Mon-Fri: ${hours.weekdayStart}-${hours.weekdayEnd}, Sat-Sun: ${hours.weekendStart}-${hours.weekendEnd}`;
 
     try {
-        const response = await fetch(`${API_BASE_URL}/merchants/setup-profile`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                merchant_id: ownerId,
-                name: storeName,
-                type: businessType,
-                pricing_tier: pricingTier,
-                operating_hours: formattedHours,
-                target_audience: targetAudienceData,
-                address: locationName,
-                latitude: markerPosition.lat,
-                longitude: markerPosition.lng
-            }),
-        });
+      const response = await fetch(`${API_BASE_URL}/merchants/setup-profile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          merchant_id: ownerId,
+          name: storeName,
+          type: businessType,
+          pricing_tier: pricingTier,
+          operating_hours: formattedHours,
+          target_audience: targetAudienceData,
+          address: locationName,
+          latitude: markerPosition.lat,
+          longitude: markerPosition.lng
+        }),
+      });
 
-        const data = await response.json();
-        if (data.status === "success") {
-            setIsSuccess(true);
-            setTimeout(() => {
-                navigate("/landing");
-            }, 1500); 
-        } else {
-            alert(data.message || "Failed to save profile.");
-            setIsSaving(false);
-        }
-    } catch (error) {
-        alert("Server connection error.");
+      const data = await response.json();
+      if (data.status === "success") {
+        setIsSuccess(true);
+        setTimeout(() => {
+          navigate("/simulation");
+        }, 1500);
+      } else {
+        alert(data.message || "Failed to save profile.");
         setIsSaving(false);
-    } 
+      }
+    } catch (error) {
+      alert("Server connection error.");
+      setIsSaving(false);
+    }
   };
 
   // Show a loading state while fetching existing data
   if (isFetching) {
     return (
-      <div className="sc-page" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh'}}>
-        <div style={{textAlign: 'center', color: '#0058bc'}}>
-          <Loader2 size={48} className="spinner" style={{marginBottom: '16px', animation: 'spin 1s linear infinite'}} />
+      <div className="sc-page" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+        <div style={{ textAlign: 'center', color: '#0058bc' }}>
+          <Loader2 size={48} className="spinner" style={{ marginBottom: '16px', animation: 'spin 1s linear infinite' }} />
           <h3>Loading your business profile...</h3>
         </div>
       </div>
@@ -185,10 +185,10 @@ export default function StoreConfiguration() {
   return (
     <div className="sc-page">
       <main className="sc-main">
-        <header style={{marginBottom: '48px'}}>
-          <span style={{background: '#6ffb85', color: '#006e28', padding: '4px 12px', borderRadius: '99px', fontSize: '12px', fontWeight: 'bold'}}>ONBOARDING MODULE</span>
+        <header style={{ marginBottom: '48px' }}>
+          <span style={{ background: '#6ffb85', color: '#006e28', padding: '4px 12px', borderRadius: '99px', fontSize: '12px', fontWeight: 'bold' }}>ONBOARDING MODULE</span>
           <h2 className="sc-title">Business DNA <br /><span className="sc-gradient-text">Configuration</span></h2>
-          <p style={{color: '#717786', fontSize: '18px'}}>Establish the core operating parameters for your SME.</p>
+          <p style={{ color: '#717786', fontSize: '18px' }}>Establish the core operating parameters for your SME.</p>
         </header>
 
         <div className="sc-grid">
@@ -198,7 +198,7 @@ export default function StoreConfiguration() {
               <h3 className="sc-card-title"><Store color="#0058bc" /> Entity Profile</h3>
               <label className="sc-label">Store Name</label>
               <input type="text" className="sc-input" value={storeName} onChange={(e) => setStoreName(e.target.value)} />
-              
+
               <div className="sc-row">
                 <div>
                   <label className="sc-label">Business Type</label>
@@ -216,73 +216,73 @@ export default function StoreConfiguration() {
             </div>
 
             <div className="sc-card">
-                <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '24px', alignItems: 'center'}}>
-                    <h3 className="sc-card-title" style={{margin: 0}}><Users color="#0058bc" /> Audience Mix</h3>
-                    <div style={{display: 'flex', alignItems: 'center', gap: '16px'}}>
-                    <span style={{fontWeight: 'bold', color: totalAllocation === 100 ? '#0058bc' : 'red'}}>{totalAllocation}% Allocated</span>
-                    <button className="sc-btn-secondary" style={{padding: '8px 16px'}} onClick={addAudience}>
-                        <Plus size={16} /> Add Type
-                    </button>
-                    </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '24px', alignItems: 'center' }}>
+                <h3 className="sc-card-title" style={{ margin: 0 }}><Users color="#0058bc" /> Audience Mix</h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <span style={{ fontWeight: 'bold', color: totalAllocation === 100 ? '#0058bc' : 'red' }}>{totalAllocation}% Allocated</span>
+                  <button className="sc-btn-secondary" style={{ padding: '8px 16px' }} onClick={addAudience}>
+                    <Plus size={16} /> Add Type
+                  </button>
                 </div>
-                
-                {audiences.map((aud) => (
-                    <div key={aud.id} style={{marginBottom: '24px', border: '1px solid #e8e8ea', padding: '16px', borderRadius: '12px'}}>
-                    <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontWeight: 'bold', alignItems: 'center'}}>
-                        <input 
-                            type="text" 
-                            value={aud.name} 
-                            onChange={(e) => setAudiences(audiences.map(a => a.id === aud.id ? { ...a, name: e.target.value } : a))}
-                            style={{border: 'none', background: 'transparent', color: '#1a1c1d', padding: 0, width: 'auto'}}
-                        />
-                        <div style={{display: 'flex', alignItems: 'center', gap: '16px'}}>
-                        <span>{aud.value}%</span>
-                        <button className="sc-icon-btn" onClick={() => removeAudience(aud.id)} title={`Remove ${aud.name}`}>
-                            <Trash2 size={16} color="red" />
-                        </button>
-                        </div>
+              </div>
+
+              {audiences.map((aud) => (
+                <div key={aud.id} style={{ marginBottom: '24px', border: '1px solid #e8e8ea', padding: '16px', borderRadius: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', fontWeight: 'bold', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      value={aud.name}
+                      onChange={(e) => setAudiences(audiences.map(a => a.id === aud.id ? { ...a, name: e.target.value } : a))}
+                      style={{ border: 'none', background: 'transparent', color: '#1a1c1d', padding: 0, width: 'auto' }}
+                    />
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                      <span>{aud.value}%</span>
+                      <button className="sc-icon-btn" onClick={() => removeAudience(aud.id)} title={`Remove ${aud.name}`}>
+                        <Trash2 size={16} color="red" />
+                      </button>
                     </div>
-                    <input type="range" min="0" max="100" value={aud.value} onChange={(e) => updateAudienceValue(aud.id, parseInt(e.target.value))} className="sc-range" />
-                    </div>
-                ))}
+                  </div>
+                  <input type="range" min="0" max="100" value={aud.value} onChange={(e) => updateAudienceValue(aud.id, parseInt(e.target.value))} className="sc-range" />
                 </div>
+              ))}
             </div>
+          </div>
 
           {/* Right Column */}
           <div>
             <div className="sc-card">
               <h3 className="sc-card-title"><MapPin color="#0058bc" /> Location Context</h3>
-              
+
               {/* 👈 Update this line to show the real address! */}
-              <p style={{fontSize: '14px', color: '#717786', minHeight: '40px'}}>
+              <p style={{ fontSize: '14px', color: '#717786', minHeight: '40px' }}>
                 {locationName === "Kuala Lumpur City Centre" ? "Drag pin to your exact storefront." : locationName}
               </p>
-              
+
               <div className="sc-map-container">
                 {isLoaded ? (
-                  <GoogleMap mapContainerStyle={{width: '100%', height: '100%'}} center={center} zoom={15} options={{disableDefaultUI: true}}>
+                  <GoogleMap mapContainerStyle={{ width: '100%', height: '100%' }} center={center} zoom={15} options={{ disableDefaultUI: true }}>
                     <Marker position={markerPosition} draggable={true} onDragEnd={onMarkerDragEnd} />
                   </GoogleMap>
-                ) : (<div style={{padding: '20px', textAlign: 'center'}}>Loading Map...</div>)}
+                ) : (<div style={{ padding: '20px', textAlign: 'center' }}>Loading Map...</div>)}
               </div>
             </div>
 
             <div className="sc-card">
               <h3 className="sc-card-title"><Clock color="#0058bc" /> Operating Rhythm</h3>
-              <div style={{marginBottom: '16px'}}>
+              <div style={{ marginBottom: '16px' }}>
                 <label className="sc-label">Weekday Hours</label>
-                <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
-                  <input type="time" className="sc-input" style={{marginBottom: 0}} value={hours.weekdayStart} onChange={(e) => setHours({...hours, weekdayStart: e.target.value})} />
-                  <span style={{fontWeight: 'bold'}}>-</span>
-                  <input type="time" className="sc-input" style={{marginBottom: 0}} value={hours.weekdayEnd} onChange={(e) => setHours({...hours, weekdayEnd: e.target.value})} />
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input type="time" className="sc-input" style={{ marginBottom: 0 }} value={hours.weekdayStart} onChange={(e) => setHours({ ...hours, weekdayStart: e.target.value })} />
+                  <span style={{ fontWeight: 'bold' }}>-</span>
+                  <input type="time" className="sc-input" style={{ marginBottom: 0 }} value={hours.weekdayEnd} onChange={(e) => setHours({ ...hours, weekdayEnd: e.target.value })} />
                 </div>
               </div>
               <div>
                 <label className="sc-label">Weekend Hours</label>
-                <div style={{display: 'flex', gap: '8px', alignItems: 'center'}}>
-                  <input type="time" className="sc-input" style={{marginBottom: 0}} value={hours.weekendStart} onChange={(e) => setHours({...hours, weekendStart: e.target.value})} />
-                  <span style={{fontWeight: 'bold'}}>-</span>
-                  <input type="time" className="sc-input" style={{marginBottom: 0}} value={hours.weekendEnd} onChange={(e) => setHours({...hours, weekendEnd: e.target.value})} />
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input type="time" className="sc-input" style={{ marginBottom: 0 }} value={hours.weekendStart} onChange={(e) => setHours({ ...hours, weekendStart: e.target.value })} />
+                  <span style={{ fontWeight: 'bold' }}>-</span>
+                  <input type="time" className="sc-input" style={{ marginBottom: 0 }} value={hours.weekendEnd} onChange={(e) => setHours({ ...hours, weekendEnd: e.target.value })} />
                 </div>
               </div>
             </div>
@@ -290,19 +290,19 @@ export default function StoreConfiguration() {
         </div>
 
         {/* Action Bar */}
-        <div style={{display: 'flex', justifyContent: 'flex-end', marginTop: '32px'}}>
-          <button 
-            className="sc-btn-primary" 
-            onClick={handleSaveProfile} 
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '32px' }}>
+          <button
+            className="sc-btn-primary"
+            onClick={handleSaveProfile}
             disabled={isSaving || isSuccess}
             style={{
-                // If success, turn the button Green!
-                background: isSuccess ? 'linear-gradient(135deg, #006e28, #6ffb85)' : '',
-                boxShadow: isSuccess ? '0 4px 12px rgba(0, 110, 40, 0.3)' : '',
-                transition: 'all 0.3s ease'
+              // If success, turn the button Green!
+              background: isSuccess ? 'linear-gradient(135deg, #006e28, #6ffb85)' : '',
+              boxShadow: isSuccess ? '0 4px 12px rgba(0, 110, 40, 0.3)' : '',
+              transition: 'all 0.3s ease'
             }}
           >
-            {isSaving ? "Saving Config..." : isSuccess ? "Saved Successfully!" : "Save Configuration"} 
+            {isSaving ? "Saving Config..." : isSuccess ? "Saved Successfully!" : "Save Configuration"}
             <Check size={20} />
           </button>
         </div>
