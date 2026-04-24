@@ -110,6 +110,8 @@ A typical user journey in Tauke.AI looks like this:
 8. **Follow the generated execution roadmap**
 
 
+
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -138,6 +140,9 @@ sequenceDiagram
     F->>B: Synthesize Debate & Simulation Data
     B-->>User: Deliver Step-by-Step Actionable Campaign Roadmap
 ```
+
+
+
 
 
 
@@ -177,6 +182,8 @@ Tauke.AI also incorporates selected external context signals:
 
 Based on our exact tech stack, separating the React frontend, Python AI backend, Supabase data layer, and external intelligence APIs.
 
+
+
 ```mermaid
 graph TD
     subgraph Frontend
@@ -199,6 +206,8 @@ graph TD
     B -->|Read/Write Data| E
     E -->|Real-time Data & Auth| A
 ```
+
+
 
 ## 🚀 Local Development Setup
 
