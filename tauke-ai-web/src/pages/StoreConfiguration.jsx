@@ -1,65 +1,108 @@
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../config';
-import { Store, RefreshCw, LayoutDashboard, MessageSquare, Shield, Sparkles, MapPin, Clock, Users, Check, Plus, Trash2 } from 'lucide-react';
+import { Store, RefreshCw, LayoutDashboard, MessageSquare, Shield, Sparkles, MapPin, Clock, Users, Check, Plus, Trash2, Loader2 } from 'lucide-react';
 import { GoogleMap, useJsApiLoader, Marker } from '@react-google-maps/api';
-import './StoreConfiguration.css'; // Loads your vanilla CSS!
+import './StoreConfiguration.css';
 
-const MENU_ITEMS = [
-  { id: 'setup', label: 'Store Setup', icon: Store },
-  { id: 'sync', label: 'Data Sync', icon: RefreshCw },
-  { id: 'analysis', label: 'Analysis', icon: LayoutDashboard },
-  { id: 'clarification', label: 'Clarification', icon: MessageSquare },
-  { id: 'warroom', label: 'War Room', icon: Shield },
-  { id: 'strategy', label: 'Strategy Synthesis', icon: Sparkles },
-];
-
-const center = { lat: 3.140853, lng: 101.693207 }; // KL City Centre
+const center = { lat: 3.140853, lng: 101.693207 };
 
 export default function StoreConfiguration() {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('setup');
   const [isSaving, setIsSaving] = useState(false);
-  const [isSuccess, setIsSuccess] = useState(false); // 👈 ADD THIS
-  const [locationName, setLocationName] = useState("Kuala Lumpur City Centre"); // 👈 ADD THIS
+  const [isSuccess, setIsSuccess] = useState(false);
+  const [isFetching, setIsFetching] = useState(true); // <-- NEW: Loading state for initial fetch
+  const [locationName, setLocationName] = useState("Kuala Lumpur City Centre");
 
   // Form State
   const [storeName, setStoreName] = useState('Kopitiam AI Central');
   const [businessType, setBusinessType] = useState('Cafe');
   const [pricingTier, setPricingTier] = useState('Mid-Market');
 
-  // Security Check
-  useEffect(() => {
-    const ownerId = localStorage.getItem("owner_id");
-    if (!ownerId) navigate("/login");
-  }, [navigate]);
-
-  // Dynamic Audience Mix
-  // --- Dynamic Audience Mix ---
   const [audiences, setAudiences] = useState([
     { id: '1', name: 'Local Residents', value: 50 },
     { id: '2', name: 'Office Staff', value: 50 }
   ]);
 
+  const [hours, setHours] = useState({
+    weekdayStart: '08:00', weekdayEnd: '22:00',
+    weekendStart: '09:00', weekendEnd: '23:30'
+  });
+
+  const [markerPosition, setMarkerPosition] = useState(center);
+  const { isLoaded } = useJsApiLoader({ id: 'google-map-script', googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '' });
+
+  // --- NEW: Fetch Existing Profile Data ---
+  useEffect(() => {
+    const ownerId = localStorage.getItem("owner_id");
+    if (!ownerId) {
+      navigate("/login");
+      return;
+    }
+
+    const fetchProfile = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/merchants/profile/${ownerId}`);
+        const data = await response.json();
+
+        if (data.status === "success" && data.profile) {
+          const p = data.profile;
+          
+          if (p.name) setStoreName(p.name);
+          if (p.type) setBusinessType(p.type);
+          if (p.pricing_tier) setPricingTier(p.pricing_tier);
+          if (p.address) setLocationName(p.address);
+          if (p.latitude && p.longitude) setMarkerPosition({ lat: p.latitude, lng: p.longitude });
+
+          // Parse JSON target audience back into React state array
+          if (p.target_audience && Object.keys(p.target_audience).length > 0) {
+            const parsedAudiences = Object.entries(p.target_audience).map(([name, value], index) => ({
+              id: String(Date.now() + index), // Unique ID
+              name,
+              value: Number(value)
+            }));
+            setAudiences(parsedAudiences);
+          }
+
+          // Parse operating hours string back into state
+          if (p.operating_hours) {
+            // Expecting: "Mon-Fri: 08:00-22:00, Sat-Sun: 09:00-23:30"
+            const regex = /Mon-Fri:\s*([\d:]+)-([\d:]+),\s*Sat-Sun:\s*([\d:]+)-([\d:]+)/;
+            const match = p.operating_hours.match(regex);
+            if (match) {
+              setHours({
+                weekdayStart: match[1],
+                weekdayEnd: match[2],
+                weekendStart: match[3],
+                weekendEnd: match[4]
+              });
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch profile:", error);
+      } finally {
+        setIsFetching(false);
+      }
+    };
+
+    fetchProfile();
+  }, [navigate]);
+  // -----------------------------------------
+
   const totalAllocation = useMemo(() => audiences.reduce((acc, curr) => acc + curr.value, 0), [audiences]);
 
   const updateAudienceValue = (id, newValue) => {
-    // Basic update: just change the value for the specific audience
     setAudiences(audiences.map(a => a.id === id ? { ...a, value: newValue } : a));
   };
 
   const addAudience = () => {
-    // Add a new audience with a default name and value
-    const newAudience = {
-      id: String(Date.now()), // Simple unique ID
-      name: `New Customer Type`,
-      value: 0
-    };
+    const newAudience = { id: String(Date.now()), name: `New Customer Type`, value: 0 };
     setAudiences([...audiences, newAudience]);
   };
 
   const removeAudience = (id) => {
-    // Remove an audience, ensuring at least one remains
     if (audiences.length > 1) {
       setAudiences(audiences.filter(a => a.id !== id));
     } else {
@@ -67,31 +110,21 @@ export default function StoreConfiguration() {
     }
   };
 
-  // Operating Hours
-  const [hours, setHours] = useState({
-    weekdayStart: '08:00', weekdayEnd: '22:00',
-    weekendStart: '09:00', weekendEnd: '23:30'
-  });
-
-  // Map state
-  const [markerPosition, setMarkerPosition] = useState(center);
-  const { isLoaded } = useJsApiLoader({ id: 'google-map-script', googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '' });
-
   const onMarkerDragEnd = useCallback((e) => {
-  if (e.latLng) {
-    const newPos = { lat: e.latLng.lat(), lng: e.latLng.lng() };
-    setMarkerPosition(newPos);
+    if (e.latLng) {
+      const newPos = { lat: e.latLng.lat(), lng: e.latLng.lng() };
+      setMarkerPosition(newPos);
 
-const geocoder = new window.google.maps.Geocoder();
-    geocoder.geocode({ location: newPos }, (results, status) => {
-      if (status === "OK" && results[0]) {
-        setLocationName(results[0].formatted_address);
-      } else {
-        setLocationName("Unknown Location");
-      }
-    });
-  }
-}, []);
+      const geocoder = new window.google.maps.Geocoder();
+      geocoder.geocode({ location: newPos }, (results, status) => {
+        if (status === "OK" && results[0]) {
+          setLocationName(results[0].formatted_address);
+        } else {
+          setLocationName("Unknown Location");
+        }
+      });
+    }
+  }, []);
 
   const handleSaveProfile = async () => {
     if (totalAllocation !== 100) return alert("Audience allocation must equal 100%.");
@@ -99,11 +132,9 @@ const geocoder = new window.google.maps.Geocoder();
     
     const ownerId = localStorage.getItem("owner_id");
     
-    // 1. Format audience as a clean JSON object
     const targetAudienceData = {};
     audiences.forEach(aud => { targetAudienceData[aud.name] = aud.value; });
 
-    // 2. Format hours
     const formattedHours = `Mon-Fri: ${hours.weekdayStart}-${hours.weekdayEnd}, Sat-Sun: ${hours.weekendStart}-${hours.weekendEnd}`;
 
     try {
@@ -114,36 +145,42 @@ const geocoder = new window.google.maps.Geocoder();
                 merchant_id: ownerId,
                 name: storeName,
                 type: businessType,
-                pricing_tier: pricingTier,        // 👈 Added
+                pricing_tier: pricingTier,
                 operating_hours: formattedHours,
                 target_audience: targetAudienceData,
-                address: locationName, // 👈 Use your locationName state here
-                latitude: markerPosition.lat,      // 👈 Added
-                longitude: markerPosition.lng      // 👈 Added
+                address: locationName,
+                latitude: markerPosition.lat,
+                longitude: markerPosition.lng
             }),
         });
 
         const data = await response.json();
         if (data.status === "success") {
-            // 1. Trigger the green success animation!
             setIsSuccess(true);
-            
-            // 2. Wait exactly 1.5 seconds, THEN jump to the dashboard
             setTimeout(() => {
                 navigate("/landing");
             }, 1500); 
-            
         } else {
             alert(data.message || "Failed to save profile.");
-            setIsSaving(false); // Only stop loading if it fails!
+            setIsSaving(false);
         }
     } catch (error) {
         alert("Server connection error.");
         setIsSaving(false);
     } 
-    // REMOVE the `finally { setIsSaving(false); }` block entirely! 
-    // If we stop loading on success, the button text flickers.
   };
+
+  // Show a loading state while fetching existing data
+  if (isFetching) {
+    return (
+      <div className="sc-page" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh'}}>
+        <div style={{textAlign: 'center', color: '#0058bc'}}>
+          <Loader2 size={48} className="spinner" style={{marginBottom: '16px', animation: 'spin 1s linear infinite'}} />
+          <h3>Loading your business profile...</h3>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="sc-page">

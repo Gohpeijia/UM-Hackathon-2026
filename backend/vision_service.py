@@ -3293,6 +3293,30 @@ def save_boss_context(payload: BossContextRequest):
     except Exception as e:
         print(f"Save Context Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/merchants/profile/{merchant_id}")
+async def get_merchant_profile(merchant_id: str):
+    """Fetches the merchant's current profile configuration."""
+    supabase = get_supabase_client()
+    try:
+        # Fetch the merchant row using the owner_id provided by the frontend
+        res = (
+            supabase.table("merchants")
+            .select("*")
+            .eq("owner_id", merchant_id)
+            .limit(1)
+            .execute()
+        )
+
+        if not res.data:
+            return {"status": "error", "message": "Merchant profile not found"}
+
+        return {
+            "status": "success",
+            "profile": res.data[0]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 
 if __name__ == "__main__":
