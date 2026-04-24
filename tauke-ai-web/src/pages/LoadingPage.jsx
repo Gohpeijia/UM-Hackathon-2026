@@ -29,6 +29,12 @@ export default function LoadingPage() {
 
         const data = await response.json();
 
+        if (data.status === "no_data") {
+          // Redirect to data-sync if there is no data for the simulation
+          navigate(data.redirect || "/data-sync");
+          return;
+        }
+
         if (data.analyst_questions) {
           // 2. Save the AI's questions to localStorage so the next page can read them instantly
           localStorage.setItem("boardroom_questions", JSON.stringify(data.analyst_questions));
@@ -36,10 +42,12 @@ export default function LoadingPage() {
           localStorage.setItem("boardroom_financial_trend", JSON.stringify(data.financial_trend || {}));
           localStorage.setItem("boardroom_diagnostic_patterns", JSON.stringify(data.diagnostic_patterns || {}));
         }
+
+        // 3. ONLY navigate to the Clarification page once the LLM is totally finished!
+        navigate("/supervisor-clarification");
       } catch (err) {
         console.error("Failed to fetch boardroom questions during loading:", err);
-      } finally {
-        // 3. ONLY navigate to the Clarification page once the LLM is totally finished!
+        // On error, we still try to proceed, but you might want to redirect to an error page instead
         navigate("/supervisor-clarification");
       }
     };

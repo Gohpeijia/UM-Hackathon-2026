@@ -11,18 +11,22 @@ export default function Login() {
     const [password, setPassword] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-	const [errorMessage, setErrorMessage] = useState("");
+    const [errorMessage, setErrorMessage] = useState("");
 
     const handleGoogleLogin = async () => {
         setIsGoogleLoading(true);
         setErrorMessage("");
+
+        const redirectUrl = `${window.location.origin}/sync`;
+
+        console.log("Redirect URL:", redirectUrl);
 
         // This physically redirects the browser to accounts.google.com
         const { error } = await supabase.auth.signInWithOAuth({
             provider: 'google',
             options: {
                 // Tells Google: "When the user finishes logging in, send them to this exact page"
-                redirectTo: `${window.location.origin}/sync` 
+                redirectTo: redirectUrl
             }
         });
 
@@ -52,7 +56,7 @@ export default function Login() {
                 // Save the session data to localStorage so other pages know who is logged in!
                 localStorage.setItem("owner_id", data.owner_id);
                 localStorage.setItem("access_token", data.access_token);
-                
+
                 // Redirect to the dashboard/landing page
                 navigate("/landing"); // Change this to your actual next page
             } else {
@@ -155,7 +159,7 @@ export default function Login() {
 
                     <form className="interaction-form" onSubmit={handleLogin}>
                         {errorMessage && <p className="error-message">{errorMessage}</p>}
-                        
+
                         <div className="field">
                             <label className="field-label" htmlFor="email">Email Address</label>
                             <input
@@ -193,7 +197,7 @@ export default function Login() {
                         </button>
                     </form>
 
-					{/* 👇 THIS IS THE NEW GOOGLE SECTION 👇 */}
+                    {/* 👇 THIS IS THE NEW GOOGLE SECTION 👇 */}
                     <div className="divider-container">
                         <div className="divider-line"></div>
                         <span className="divider-text">OR</span>

@@ -2158,6 +2158,16 @@ def boardroom_start(payload: BoardroomStartRequest) -> Dict[str, Any]:
         financial_context = _build_financial_context_payload(supabase, actual_shop_id, target_month)
         
         financial_trend = financial_context.get("financial_trend", {})
+        
+        # 👈 NEW: Check if there's no data for this month and abort simulation
+        target_month_data = financial_trend.get("target_month", {})
+        if not target_month_data or float(target_month_data.get("total_revenue", 0)) == 0:
+            return {
+                "status": "no_data",
+                "message": "No data available for this month. Please sync your data.",
+                "redirect": "/data-sync"
+            }
+
         diagnostic_json = financial_context.get("diagnostic_patterns", {})
 
         sys_prompt, usr_prompt = _analyst_interrogation_prompt(financial_context)
