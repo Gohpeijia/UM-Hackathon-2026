@@ -1,11 +1,10 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../config';
 import { Store, RefreshCw, LayoutDashboard, MessageSquare, Shield, Sparkles, MapPin, Clock, Users, Check, Plus, Trash2, Loader2 } from 'lucide-react';
-import { GoogleMap, useJsApiLoader, Marker } from '@react-google-maps/api';
 import './StoreConfiguration.css';
+import { useJsApiLoader, GoogleMap, Marker, Autocomplete } from '@react-google-maps/api';
 
-const center = { lat: 3.140853, lng: 101.693207 };
 
 export default function StoreConfiguration() {
   const navigate = useNavigate();
@@ -14,6 +13,9 @@ export default function StoreConfiguration() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [isFetching, setIsFetching] = useState(true); // <-- NEW: Loading state for initial fetch
   const [locationName, setLocationName] = useState("Kuala Lumpur City Centre");
+  const autocompleteRef = useRef(null);
+  const [center, setCenter] = useState({ lat: 3.140853, lng: 101.693207 });
+  const [searchInput, setSearchInput] = useState('');
 
   // Form State
   const [storeName, setStoreName] = useState('Kopitiam AI Central');
@@ -31,7 +33,7 @@ export default function StoreConfiguration() {
   });
 
   const [markerPosition, setMarkerPosition] = useState(center);
-  const { isLoaded } = useJsApiLoader({ id: 'google-map-script', googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '' });
+  const { isLoaded } = useJsApiLoader({ id: 'google-map-script', googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY || '', libraries: ['places'] });
 
   // --- NEW: Fetch Existing Profile Data ---
   useEffect(() => {
@@ -114,13 +116,16 @@ export default function StoreConfiguration() {
     if (e.latLng) {
       const newPos = { lat: e.latLng.lat(), lng: e.latLng.lng() };
       setMarkerPosition(newPos);
+      setCenter(newPos); 
 
       const geocoder = new window.google.maps.Geocoder();
       geocoder.geocode({ location: newPos }, (results, status) => {
         if (status === "OK" && results[0]) {
           setLocationName(results[0].formatted_address);
+          setSearchInput(results[0].formatted_address);
         } else {
           setLocationName("Unknown Location");
+          setSearchInput("Unknown Location");
         }
       });
     }
@@ -169,6 +174,37 @@ export default function StoreConfiguration() {
       setIsSaving(false);
     }
   };
+
+  const onPlaceChanged = () => {
+    if (autocompleteRef.current) {
+      const place = autocompleteRef.current.getPlace();
+      if (place.geometry) {
+        const lat = place.geometry.location.lat();
+        const lng = place.geometry.location.lng();
+        setCenter({ lat, lng });
+        setMarkerPosition({ lat, lng });
+        setLocationName(place.formatted_address || place.name);
+        setSearchInput(place.formatted_address || place.name);
+      }
+    }
+  };
+
+  const onSearchKeyDown = (e) => {
+  if (e.key === 'Enter' && window.google) {
+    e.preventDefault();
+    const geocoder = new window.google.maps.Geocoder();
+    geocoder.geocode({ address: e.target.value }, (results, status) => {
+      if (status === 'OK' && results[0]) {
+        const lat = results[0].geometry.location.lat();
+        const lng = results[0].geometry.location.lng();
+        setCenter({ lat, lng });
+        setMarkerPosition({ lat, lng });
+        setLocationName(results[0].formatted_address);
+        setSearchInput(results[0].formatted_address); // 👈 normalize the input text
+      }
+    });
+  }
+};
 
   // Show a loading state while fetching existing data
   if (isFetching) {
@@ -254,8 +290,34 @@ export default function StoreConfiguration() {
               <h3 className="sc-card-title"><MapPin color="#0058bc" /> Location Context</h3>
 
               {/* 👈 Update this line to show the real address! */}
+              {/* Search bar */}
+              <Autocomplete
+                onLoad={(autocomplete) => (autocompleteRef.current = autocomplete)}
+                onPlaceChanged={onPlaceChanged}
+              >
+                <input
+                  type="text"
+                  placeholder="Search for your store location..."
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  onKeyDown={onSearchKeyDown}
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '14px',
+                    border: '1px solid #d1d5db',
+                    borderRadius: '8px',
+                    marginBottom: '8px',
+                    boxSizing: 'border-box',
+                    outline: 'none',
+                  }}
+                />
+              </Autocomplete>
+
+              {/* Address display */}
               <p style={{ fontSize: '14px', color: '#717786', minHeight: '40px' }}>
-                {locationName === "Kuala Lumpur City Centre" ? "Drag pin to your exact storefront." : locationName}
+                {locationName === "Kuala Lumpur City Centre"
+                  ? "Drag pin to your exact storefront or search above."
+                  : locationName}
               </p>
 
               <div className="sc-map-container">
