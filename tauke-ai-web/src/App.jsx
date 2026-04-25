@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-
 import AppLayout from "./components/AppLayout";
 
 import Login from "./pages/Login";

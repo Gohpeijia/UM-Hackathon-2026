@@ -5,6 +5,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import html2canvas from 'html2canvas';
+import { jsPDF } from 'jspdf';
 import { motion, AnimatePresence } from 'framer-motion';
 import { API_BASE_URL } from '../config';
 import {
@@ -17,9 +19,9 @@ import {
 } from 'lucide-react';
 
 import './FinalSynthesis.css';
-import './LoadingPage.css'; // Added for the loading state!
+import './LoadingPage.css';
 
-const Modal = ({ isOpen, onClose, onConfirm, title, children }) => {
+const Modal = ({ isOpen, onClose, onConfirm, title, confirmText = "Download Strategy", children }) => {
   return (
     <AnimatePresence>
       {isOpen && (
@@ -35,7 +37,7 @@ const Modal = ({ isOpen, onClose, onConfirm, title, children }) => {
             <div className="modal-body">
               <div className="modal-header">
                 <h3 className="modal-title">{title}</h3>
-                <button onClick={onConfirm} className="modal-close">
+                <button onClick={onClose} className="modal-close">
                   <X size={24} />
                 </button>
               </div>
@@ -44,7 +46,7 @@ const Modal = ({ isOpen, onClose, onConfirm, title, children }) => {
               </div>
               <div className="modal-footer">
                 <button onClick={onConfirm} className="btn-modal">
-                  Acknowledge & Continue
+                  {confirmText}
                 </button>
               </div>
             </div>
@@ -97,7 +99,6 @@ const StrategyCard = ({ strategy, onExecute }) => {
   );
 };
 
-// We define the visuals here so they perfectly map to the dynamic LLM data
 const VISUAL_MAPPINGS = {
   aggressive: { icon: <Rocket size={24} fill="currentColor" />, accentColor: '#dc2626', bgColor: '#fef2f2' },
   hybrid: { icon: <ArrowLeftRight size={24} />, accentColor: '#0058bc', bgColor: '#eff6ff' },
@@ -110,12 +111,13 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [strategies, setStrategies] = useState([]);
   const [analysis, setAnalysis] = useState(null);
-  const [selectedStrategy, setSelectedStrategy] = useState(null); // Track what they clicked!
+  const [selectedStrategy, setSelectedStrategy] = useState(null);
 
   const [modalState, setModalState] = useState({
     isOpen: false,
     title: '',
     content: null,
+    confirmText: 'Download Strategy',
     onConfirmAction: null
   });
 
@@ -146,7 +148,6 @@ export default function App() {
         const json = await response.json();
 
         if (json.status === "success" && json.data) {
-          // Merge LLM data with your hardcoded colors and icons!
           const mappedStrategies = json.data.strategies.map(s => ({
             ...s,
             ...(VISUAL_MAPPINGS[s.id] || VISUAL_MAPPINGS.hybrid)
@@ -165,12 +166,60 @@ export default function App() {
     fetchSynthesis();
   }, []);
 
-  const openModal = (title, content, customConfirmAction = null) => {
-    setModalState({ isOpen: true, title, content, onConfirmAction: customConfirmAction });
+  const openModal = (title, content, customConfirmAction = null, confirmText = 'Download Strategy') => {
+    setModalState({ isOpen: true, title, content, confirmText, onConfirmAction: customConfirmAction });
   };
 
   const closeModal = () => {
     setModalState(prev => ({ ...prev, isOpen: false }));
+  };
+
+  // --- NEW PDF GENERATOR FUNCTION ---
+  const handleDownloadPDF = async () => {
+    try {
+      setModalState(prev => ({
+        ...prev,
+        title: 'Generating PDF...',
+        content: (
+          <div style={{ textAlign: 'center', padding: '10px 0' }}>
+            <div className="loading-spinner" style={{ margin: '0 auto 16px' }} />
+            <p>Compiling your strategic vectors into a document.</p>
+          </div>
+        ),
+        onConfirmAction: null
+      }));
+
+      const targetElement = document.querySelector('.dashboard-main');
+
+      if (!targetElement) throw new Error("Dashboard not found");
+
+      const canvas = await html2canvas(targetElement, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save('Tauke_Strategic_Report.pdf');
+
+      closeModal();
+
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+      setModalState(prev => ({
+        ...prev,
+        title: 'Download Failed',
+        content: <p style={{ color: '#ef4444' }}>Failed to generate the PDF. Please try again.</p>,
+        confirmText: 'Close',
+        onConfirmAction: closeModal
+      }));
+    }
   };
 
   const handleConfirmAction = async (strategy) => {
@@ -179,11 +228,9 @@ export default function App() {
       return;
     }
 
-    // 1. Immediately wipe any old roadmap data from previous simulations!
     localStorage.removeItem("swarm_roadmap");
     localStorage.removeItem("swarm_scenario");
 
-    // 2. Update the modal to show a loading state
     setModalState(prev => ({
       ...prev,
       title: 'Generating Blueprint...',
@@ -193,14 +240,13 @@ export default function App() {
           <p>Translating the <strong>{strategy.title}</strong> strategy into an actionable AI roadmap...</p>
         </div>
       ),
-      onConfirmAction: null // Disable button while loading
+      onConfirmAction: null
     }));
 
     try {
       const merchantId = localStorage.getItem("owner_id");
       const targetMonth = localStorage.getItem("target_month");
 
-      // 3. Call your Roadmap API
       const response = await fetch(`${API_BASE_URL}/roadmap/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -219,7 +265,6 @@ export default function App() {
       const json = await response.json();
 
       if (response.ok && json.status === "success") {
-        // 4. Overwrite the main shared keys so the roadmap page picks it up perfectly!
         localStorage.setItem("ceo_verdict", JSON.stringify(strategy));
         localStorage.setItem("swarm_roadmap", JSON.stringify(json.roadmap));
         localStorage.setItem("swarm_scenario", `Executed Strategy: ${strategy.title}`);
@@ -235,13 +280,14 @@ export default function App() {
         ...prev,
         title: 'Generation Failed',
         content: <p style={{ color: '#ef4444' }}>Failed to generate the roadmap. Please try again.</p>,
+        confirmText: 'Close',
         onConfirmAction: closeModal
       }));
     }
   };
 
   const handleExecute = (s) => {
-    setSelectedStrategy(s); // Keep this for anything else that might need it
+    setSelectedStrategy(s);
     openModal(
       `Executing ${s.title} Campaign`,
       <>
@@ -252,11 +298,11 @@ export default function App() {
         <p>This path focuses on <span style={{ fontWeight: 600 }}>{s.growth} growth</span> with a
           <span style={{ color: s.accentColor, fontWeight: 700 }}> {s.riskLevel}</span> risk profile.</p>
       </>,
-      () => handleConfirmAction(s) // <--- CRITICAL FIX: Pass 's' directly into the closure here
+      () => handleConfirmAction(s),
+      "Execute Campaign" // Keep this button text normal
     );
   };
 
-  // The Loading Screen perfectly mimics the transition flow you already built!
   if (isLoading) {
     return (
       <div className="loading-page" role="status" aria-live="polite">
@@ -283,7 +329,7 @@ export default function App() {
           className="hero-header"
         >
           <button
-            onClick={() => openModal('Synthesis & Execution', 'This module synthesizes 1.2M market simulations into actionable strategic vectors.')}
+            onClick={() => openModal('Synthesis & Execution', 'This module synthesizes 1.2M market simulations into actionable strategic vectors.', closeModal, 'Understood')}
             className="text-label-pill"
           >
             Synthesis & Execution
@@ -311,13 +357,19 @@ export default function App() {
               <h3 className="analysis-title">Comparative Analysis</h3>
               <div className="tool-buttons">
                 <button
-                  onClick={() => openModal('Filters', 'Advanced filtering options for comparative metrics will appear here.')}
+                  onClick={() => openModal('Filters', 'Advanced filtering options for comparative metrics will appear here.', closeModal, 'Close')}
                   className="btn-tool"
                 >
                   <Filter size={20} />
                 </button>
+                {/* --- NEW PDF BUTTON WIRED UP --- */}
                 <button
-                  onClick={() => openModal('Download Report', 'Preparing your strategic PDF export... Total size: 4.2MB')}
+                  onClick={() => openModal(
+                    'Download Report',
+                    'Preparing your strategic PDF export... Total size: 4.2MB',
+                    handleDownloadPDF,
+                    'Download Strategy'
+                  )}
                   className="btn-tool"
                 >
                   <Download size={20} />
@@ -400,13 +452,13 @@ export default function App() {
           <div className="footer-links">
             <span style={{ color: '#64748b' }}>© 2024 Tauke.AI Corp.</span>
             <button
-              onClick={() => openModal('Privacy Policy', 'Your data is encrypted with enterprise-grade AES-256.')}
+              onClick={() => openModal('Privacy Policy', 'Your data is encrypted with enterprise-grade AES-256.', closeModal, 'Close')}
               className="footer-btn"
             >
               Privacy Policy
             </button>
             <button
-              onClick={() => openModal('Compliance Hub', 'Tauke.AI maintains SOC2 Type II, HIPAA, and GDPR compliance.')}
+              onClick={() => openModal('Compliance Hub', 'Tauke.AI maintains SOC2 Type II, HIPAA, and GDPR compliance.', closeModal, 'Close')}
               className="footer-btn"
             >
               Compliance Hub
@@ -427,6 +479,7 @@ export default function App() {
         onClose={closeModal}
         onConfirm={modalState.onConfirmAction ? modalState.onConfirmAction : closeModal}
         title={modalState.title}
+        confirmText={modalState.confirmText}
       >
         {modalState.content}
       </Modal>

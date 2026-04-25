@@ -4,26 +4,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.getenv("ILMU_API_KEY")
-model   = os.getenv("ILMU_MODEL", "ilmu-glm-5.1")
+api_key = os.getenv("GEMINI_API_KEY")
+model   = os.getenv("GEMINI_MODEL", "gemini-3-pro-preview")
 
 print(f"Key loaded: {'YES (' + api_key[:8] + '...)' if api_key else 'NO (None or empty)'}")
 
+
 response = requests.post(
-    "https://api.ilmu.ai/v1/chat/completions",
-    headers={
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    },
+    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+    headers={"Content-Type": "application/json"},
     json={
-        "model": model,
-        "temperature": 0,
-        "messages": [
-            {"role": "user", "content": "Say hello."}
-        ],
+        "contents": [{"parts": [{"text": "Say hello."}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 100},
     },
-    timeout=15,
+    timeout=30,
 )
 
 print(f"Status: {response.status_code}")
-print(f"Response: {response.json()}")
+data = response.json()
+if response.ok:
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
+    print(f"Response: {text}")
+else:
+    print(f"Error: {data}")
