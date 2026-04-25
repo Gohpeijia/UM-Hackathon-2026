@@ -23,7 +23,6 @@ Optional overrides:
 import os
 import time
 import requests
-import zhipuai
 from typing import Any
 from fastapi import HTTPException
 
@@ -181,7 +180,6 @@ def _call_text_llm(
         (f"Llama (primary)",  lambda sp, up, t: _call_openrouter(primary_model,  sp, up, t)),
         (f"Qwen (fallback)",  lambda sp, up, t: _call_openrouter(fallback_model, sp, up, t)),
         ("Gemini (last resort)", _call_gemini_text),
-        ("ZhipuAI (3rd string)", _call_zhipu_text),
     ]
 
     last_error = None

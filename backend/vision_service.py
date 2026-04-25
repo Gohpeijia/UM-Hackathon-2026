@@ -395,7 +395,7 @@ def _render_pdf_pages_as_data_urls(file_bytes: bytes, max_pages: int = 5) -> Lis
 
     for page_index in range(page_limit):
         page = doc[page_index]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0), alpha=False)
         png_bytes = pix.tobytes("png")
         data_urls.append(_bytes_to_data_url(png_bytes, "image/png"))
 
@@ -403,6 +403,15 @@ def _render_pdf_pages_as_data_urls(file_bytes: bytes, max_pages: int = 5) -> Lis
 
 
 def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
+    """
+    OCR/vision for the 3 DataSync upload columns:
+      - Sales CSV       → /upload/sales
+      - P&L Statement   → /upload/statement
+      - Invoices PDF    → /upload/invoices
+
+    Uses ilmu.ai  (ilmu-glm-4.6v) — a vision-capable model on the ilmu.ai endpoint.
+    Falls back to Gemini 3 Flash if ilmu.ai fails or is unavailable.
+    """
     _ = client
 
     # 1. Initialize variables first
@@ -418,17 +427,26 @@ def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
     MAX_VISION_RETRIES = 3
     last_exc = None
 
-    for attempt in range(1, MAX_VISION_RETRIES + 1):
+    ilmu_api_key = os.getenv("ILMU_API_KEY")
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+
+    if not ilmu_api_key and not gemini_api_key:
+        raise HTTPException(status_code=500, detail="No vision API key available. Set ILMU_API_KEY or GEMINI_API_KEY in .env")
+
+    # ---------------------------------------------------------
+    # ATTEMPT 1: ILMU.AI (If key exists)
+    # ---------------------------------------------------------
+    if ilmu_api_key:
         try:
-            # 2. Make the OpenRouter request INSIDE the retry loop
             response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
+                "https://api.ilmu.ai/v1/chat/completions",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}"
+                    "Authorization": f"Bearer {ilmu_api_key}"
                 },
                 json={
-                    "model": "google/gemini-2.5-flash", # Use whatever vision model you prefer here
+                    "model": os.getenv("ILMU_VISION_MODEL", "glm-4v"), # Using a safer default model name
+                    "max_tokens": 4000,
                     "messages": [
                         {
                             "role": "user",
@@ -442,45 +460,64 @@ def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
                 timeout=90,
             )
 
-            content_type = response.headers.get("content-type", "")
-            if "text/html" in content_type:
-                raise Exception(f"OpenRouter returned HTML error (HTTP {response.status_code})")
-
-            if response.status_code == 429:
-                wait_s = 8 * attempt  # 8s, 16s, 24s
-                print(f"[Vision Retry {attempt}/{MAX_VISION_RETRIES}] Rate limited (429), waiting {wait_s}s...")
-                _time_mod.sleep(wait_s)
-                last_exc = Exception(f"Openrouter vision 429 rate limited: {response.text[:200]}")
-                continue  # ✅ retry
-
-            if not response.ok:
-                raise Exception(f"Openrouter vision HTTP {response.status_code}: {response.text[:300]}")
-
-            data = response.json()
-            
-            # 3. Parse using OpenRouter's (OpenAI-style) format instead of native Gemini format
-            choices = data.get("choices")
-            if not isinstance(choices, list) or not choices:
-                raise HTTPException(status_code=502, detail=f"openrouter vision returned no choices: {data}")
-
-            raw_text = choices[0].get("message", {}).get("content", "")
-            raw_text = _extract_model_text(raw_text)
-            
-            return _parse_model_json(raw_text, source_name="Vision model")
-
-        except HTTPException:
-            raise  # ✅ don't retry validation errors
+            if response.ok:
+                data = response.json()
+                choices = data.get("choices")
+                if choices and isinstance(choices, list):
+                    raw_text = _extract_model_text(choices[0].get("message", {}).get("content", ""))
+                    return _parse_model_json(raw_text, source_name="Ilmu Vision")
+            else:
+                print(f"[Vision] Primary API failed (HTTP {response.status_code}).")
+                last_exc = Exception(f"Ilmu HTTP {response.status_code}")
+                
         except Exception as exc:
+            print(f"[Vision] Primary API error: {exc}")
             last_exc = exc
-            print(f"[Vision Retry {attempt}/{MAX_VISION_RETRIES}] Error: {type(exc).__name__}: {exc}")
-            if attempt < MAX_VISION_RETRIES:
-                _time_mod.sleep(5 * attempt)
-                continue  # ✅ retry on general errors too
-            # exhausted retries — fall through to raise below
 
+    # ---------------------------------------------------------
+    # ATTEMPT 2: GEMINI FALLBACK (If ILMU fails or model is 404)
+    # ---------------------------------------------------------
+    if gemini_api_key:
+        print("[Vision] Falling back to Gemini Vision API...")
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={gemini_api_key}"
+            response = requests.post(
+                url,
+                headers={"Content-Type": "application/json"},
+                json={
+                    "contents": [{
+                        "parts": [
+                            {"text": f"{prompt}\n\nRead this document and return JSON only."},
+                            {"inline_data": {"mime_type": mime_type, "data": b64_data}},
+                        ]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "maxOutputTokens": 4000,
+                    },
+                },
+                timeout=90,
+            )
+
+            if response.ok:
+                data = response.json()
+                candidates = data.get("candidates")
+                if candidates and isinstance(candidates, list):
+                    raw_text = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    raw_text = _extract_model_text(raw_text)
+                    return _parse_model_json(raw_text, source_name="Gemini Vision")
+            else:
+                print(f"[Vision] Gemini fallback failed (HTTP {response.status_code}).")
+                last_exc = Exception(f"Gemini HTTP {response.status_code}: {response.text[:200]}")
+
+        except Exception as exc:
+            print(f"[Vision] Gemini error: {exc}")
+            last_exc = exc
+
+    # If both fail, crash gracefully
     raise HTTPException(
         status_code=502,
-        detail=f"API failed after {MAX_VISION_RETRIES} attempts: {last_exc}",
+        detail=f"All Vision APIs failed to process the document. Last error: {last_exc}",
     )
 
 def _normalize_pl_rows(parsed: Any) -> List[Dict[str, Any]]:
