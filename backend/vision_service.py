@@ -1222,7 +1222,7 @@ def _fetch_financial_trend(
 ) -> Dict[str, Any]:
     history_res = (
         supabase.table("monthly_summaries")
-        .select("report_month,total_revenue,net_profit,total_ingredient_costs")
+        .select("report_month,total_revenue,net_profit")
         .eq("merchant_id", merchant_id)
         .lte("report_month", target_month)
         .order("report_month", desc=False)
@@ -1238,7 +1238,6 @@ def _fetch_financial_trend(
             "report_month": target_month,
             "total_revenue": 0.0,
             "net_profit": 0.0,
-            "total_ingredient_costs": 0.0,
         }
         return {
             "target_month": stub,
@@ -1259,7 +1258,6 @@ def _fetch_financial_trend(
             "report_month": report_month,
             "total_revenue": _to_float(row.get("total_revenue"), 0.0),
             "net_profit": _to_float(row.get("net_profit"), 0.0),
-            "total_ingredient_costs": _to_float(row.get("total_ingredient_costs"), 0.0),
         }
         normalized_rows.append(normalized)
         if report_month == target_month:
@@ -1271,7 +1269,6 @@ def _fetch_financial_trend(
             "report_month": target_month,
             "total_revenue": 0.0,
             "net_profit": 0.0,
-            "total_ingredient_costs": 0.0,
         }
 
     historical_rows = [r for r in normalized_rows if r["report_month"] < target_month]
@@ -3170,7 +3167,6 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
         slim_fin = {
             "rev": (fin_trend.get("target_month") or {}).get("total_revenue", 0),
             "profit": (fin_trend.get("target_month") or {}).get("net_profit", 0),
-            "cogs": (fin_trend.get("target_month") or {}).get("total_ingredient_costs", 0),
             "avg_rev": (fin_trend.get("rolling_averages") or {}).get("avg_revenue", 0),
         }
 
@@ -3267,47 +3263,6 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
 
         total_buy = sum(1 for a in synthetic_agents if a["decision"] == "buy")
         total_pass = len(synthetic_agents) - total_buy
-
-        financials = simulation_data.get("financial_analysis", {})
-        
-        # We assume standard cafe metrics if the LLM didn't provide specific costs
-        upfront_cost = float(financials.get("estimated_upfront_cost", 0.0))
-        new_aov = float(financials.get("estimated_new_aov", 18.00))
-
-        base_aov = 18.00
-        base_conversion_rate = 0.30 
-
-        # 🚨 THE NEW DYNAMIC MARGIN CALCULATOR 🚨
-        current_rev = float(slim_fin.get("rev", 0.0))
-        current_cogs = float(slim_fin.get("cogs", 0.0))
-        
-        if current_rev > 0 and current_cogs > 0:
-            # Formula: (Revenue - Ingredient Costs) / Revenue
-            profit_margin = (current_rev - current_cogs) / current_rev
-            # Cap it between 10% and 80% to prevent extreme data anomalies ruining the math
-            profit_margin = max(0.10, min(profit_margin, 0.80)) 
-        else:
-            profit_margin = 0.40 # Fallback if they haven't uploaded invoices yet
-
-        # Calculate exact Ringgit impact
-        baseline_buyers = int(len(synthetic_agents) * base_conversion_rate)
-        baseline_profit = (baseline_buyers * base_aov * profit_margin)
-
-        projected_gross_profit = (total_buy * new_aov * profit_margin)
-        projected_net_profit = projected_gross_profit - upfront_cost
-
-        true_profit_boost = projected_net_profit - baseline_profit
-        
-        # Override the LLM's guesses with our hard math
-        financials["baseline_estimated_profit"] = baseline_profit
-        financials["projected_new_profit"] = projected_net_profit
-        financials["profit_boost"] = true_profit_boost
-        
-        # Hard fail the verdict if it loses money
-        if true_profit_boost < 0:
-            financials["final_verdict"] = "AVOID"
-
-        simulation_data["financial_analysis"] = financials
 
         response_payload = {
             "status": "success",
