@@ -10,6 +10,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
+from llm_layer import _call_text_llm
 
 import fitz
 import pandas as pd
@@ -81,12 +82,12 @@ class ProfileSetupRequest(BaseModel):
     merchant_id: str
     name: str
     type: str
-    pricing_tier: str       # 👈 New
+    pricing_tier: str       
     operating_hours: str
-    target_audience: dict   # 👈 Receives the JSON audience mix
-    address: str            # 👈 New
-    latitude: float         # 👈 New
-    longitude: float        # 👈 New
+    target_audience: dict   
+    address: str            
+    latitude: float         
+    longitude: float        
 
 class SignupRequest(BaseModel):
     email: str
@@ -142,12 +143,12 @@ app.add_middleware(
 
 
 
-def get_zhipu_api_key() -> str:
-    api_key = os.getenv("ZHIPU_API_KEY") or os.getenv("ZHIPUAI_API_KEY")
+def get_openrouter_api_key() -> str:
+    api_key = os.getenv("OPENROUTER_API_KEY") 
     if not api_key:
         raise HTTPException(
             status_code=500,
-            detail="Missing ZHIPU_API_KEY or ZHIPUAI_API_KEY environment variable",
+            detail="Missing OPENROUTER_API_KEY environment variable",
         )
     return api_key
 
@@ -160,19 +161,11 @@ def _get_google_places_api_key() -> Optional[str]:
     )
 
 
+
+
 def get_zhipu_client() -> Any:
-    api_key = get_zhipu_api_key()
-    if hasattr(zhipuai, "ZhipuAI"):
-        return {"mode": "modern", "client": zhipuai.ZhipuAI(api_key=api_key)}
-
-    if hasattr(zhipuai, "model_api"):
-        zhipuai.api_key = api_key
-        return {"mode": "legacy", "client": zhipuai}
-
-    raise HTTPException(
-        status_code=500,
-        detail="Installed zhipuai package has neither ZhipuAI nor model_api interface",
-    )
+    """Kept for call-site compatibility. Returns None; OpenRouter is called directly."""
+    return None
 
 
 def get_supabase_client() -> Client:
@@ -410,125 +403,85 @@ def _render_pdf_pages_as_data_urls(file_bytes: bytes, max_pages: int = 5) -> Lis
 
 
 def _vision_json(client: Any, image_data_url: str, prompt: str) -> Any:
-    """Call ZhipuAI glm-5.1 vision model via direct HTTP API.
+    _ = client
 
-    The legacy SDK (v1.0.7) returns empty content for vision calls,
-    so we bypass it and call the HTTP API directly with JWT auth.
-    """
-    _ = client  # Kept for call-site compat; we now use direct HTTP
+    # 1. Initialize variables first
+    api_key = get_openrouter_api_key()
 
-    api_key = get_zhipu_api_key()
+    if "," not in image_data_url:
+        raise HTTPException(status_code=400, detail="Invalid image data URL: missing comma separator")
 
-    # ZhipuAI API key format: "{id}.{secret}" — split to build JWT
-    parts = api_key.split(".")
-    if len(parts) != 2:
-        raise HTTPException(status_code=500, detail="ZHIPUAI_API_KEY must be in 'id.secret' format")
+    header, b64_data = image_data_url.split(",", 1)
+    mime_type = header[5:].split(";")[0].lower() if header.startswith("data:") else "image/png"
 
-    api_id, api_secret = parts[0], parts[1]
-
-    # Build the JWT token (ZhipuAI's auth method)
-    import time as _time
-    try:
-        import jwt
-        now_ms = int(_time.time() * 1000)
-        payload_jwt = {
-            "api_key": api_id,
-            "exp": now_ms + 300_000,  # 5 min expiry
-            "timestamp": now_ms,
-        }
-        token = jwt.encode(payload_jwt, api_secret, algorithm="HS256", headers={"alg": "HS256", "sign_type": "SIGN"})
-    except Exception as jwt_err:
-        raise HTTPException(status_code=500, detail=f"Failed to sign ZhipuAI JWT: {jwt_err}")
-
-    # Call the vision model via direct HTTP with retry on 429 rate limits
     import time as _time_mod
     MAX_VISION_RETRIES = 3
     last_exc = None
 
     for attempt in range(1, MAX_VISION_RETRIES + 1):
         try:
+            # 2. Make the OpenRouter request INSIDE the retry loop
             response = requests.post(
-                "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+                "https://openrouter.ai/api/v1/chat/completions",
                 headers={
-                    "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
                 },
                 json={
-                    "model": "glm-4.6v-flash",
-                    "temperature": 0.1,
-                    "max_tokens": 4000,
+                    "model": "google/gemini-2.5-flash", # Use whatever vision model you prefer here
                     "messages": [
-                        {"role": "system", "content": prompt},
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": "Read this document and return JSON only."},
-                                {"type": "image_url", "image_url": {"url": image_data_url}},
-                            ],
-                        },
-                    ],
+                                {"type": "text", "text": f"{prompt}\n\nRead this document and return JSON only."},
+                                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}}
+                            ]
+                        }
+                    ]
                 },
                 timeout=90,
             )
 
-            # Handle HTML error pages (e.g. gateway errors)
             content_type = response.headers.get("content-type", "")
             if "text/html" in content_type:
-                raise Exception(f"ZhipuAI returned HTML error (HTTP {response.status_code})")
+                raise Exception(f"OpenRouter returned HTML error (HTTP {response.status_code})")
 
-            # Handle 429 rate limit — wait and retry
             if response.status_code == 429:
                 wait_s = 8 * attempt  # 8s, 16s, 24s
-                print(f"[Vision] ZhipuAI rate limited (429, attempt {attempt}/{MAX_VISION_RETRIES}). Waiting {wait_s}s...")
+                print(f"[Vision Retry {attempt}/{MAX_VISION_RETRIES}] Rate limited (429), waiting {wait_s}s...")
                 _time_mod.sleep(wait_s)
-                # Rebuild JWT since it's time-based
-                now_ms = int(_time_mod.time() * 1000)
-                payload_jwt["exp"] = now_ms + 300_000
-                payload_jwt["timestamp"] = now_ms
-                token = jwt.encode(payload_jwt, api_secret, algorithm="HS256", headers={"alg": "HS256", "sign_type": "SIGN"})
-                last_exc = Exception(f"ZhipuAI vision HTTP 429 (rate limited): {response.text[:200]}")
-                continue
+                last_exc = Exception(f"Openrouter vision 429 rate limited: {response.text[:200]}")
+                continue  # ✅ retry
 
             if not response.ok:
-                raise Exception(f"ZhipuAI vision HTTP {response.status_code}: {response.text[:300]}")
+                raise Exception(f"Openrouter vision HTTP {response.status_code}: {response.text[:300]}")
 
             data = response.json()
-
-            # Check for API-level error codes (e.g. 1305 = rate limit in body)
-            if "error" in data:
-                err_code = data["error"].get("code", "")
-                err_msg = data["error"].get("message", "")
-                if str(err_code) in ("1305", "1301", "1302"):
-                    wait_s = 10 * attempt
-                    print(f"[Vision] ZhipuAI error {err_code} (attempt {attempt}/{MAX_VISION_RETRIES}). Waiting {wait_s}s...")
-                    _time_mod.sleep(wait_s)
-                    last_exc = Exception(f"ZhipuAI vision error {err_code}: {err_msg}")
-                    continue
-                raise Exception(f"ZhipuAI vision API error {err_code}: {err_msg}")
-
+            
+            # 3. Parse using OpenRouter's (OpenAI-style) format instead of native Gemini format
             choices = data.get("choices")
             if not isinstance(choices, list) or not choices:
-                raise HTTPException(status_code=502, detail=f"Vision model returned no choices: {data}")
+                raise HTTPException(status_code=502, detail=f"openrouter vision returned no choices: {data}")
 
-            raw_text = _extract_model_text(choices[0].get("message", {}).get("content", ""))
+            raw_text = choices[0].get("message", {}).get("content", "")
+            raw_text = _extract_model_text(raw_text)
+            
             return _parse_model_json(raw_text, source_name="Vision model")
 
         except HTTPException:
-            raise
+            raise  # ✅ don't retry validation errors
         except Exception as exc:
             last_exc = exc
+            print(f"[Vision Retry {attempt}/{MAX_VISION_RETRIES}] Error: {type(exc).__name__}: {exc}")
             if attempt < MAX_VISION_RETRIES:
                 _time_mod.sleep(5 * attempt)
-                continue
-            break
+                continue  # ✅ retry on general errors too
+            # exhausted retries — fall through to raise below
 
     raise HTTPException(
         status_code=502,
-        detail=f"ZhipuAI vision request failed after {MAX_VISION_RETRIES} attempts: {last_exc}",
+        detail=f"API failed after {MAX_VISION_RETRIES} attempts: {last_exc}",
     )
-
-
-
 
 def _normalize_pl_rows(parsed: Any) -> List[Dict[str, Any]]:
     if isinstance(parsed, list):
@@ -963,179 +916,11 @@ def _replace_supplier_invoices(supabase: Client, summary_id: str, rows: List[Dic
     supabase.table("supplier_invoices").insert(payload).execute()
     return len(payload)
 
-
-def _call_text_llm(
-    client: Any, system_prompt: str, user_prompt: str, temperature: float = 0.2
-) -> str:
-    """Call ILMU glm-5.1 with auto-retry on 504/timeout errors."""
-    _ = client  # Kept for call-site compatibility; glm-5.1 now routes via ILMU.
-
-    ilmu_api_key = os.getenv("ILMU_API_KEY")
-    if not ilmu_api_key:
-        raise HTTPException(
-            status_code=500,
-            detail="Missing ILMU_API_KEY environment variable for glm-5.1",
-        )
-
-    # The only model available on this ILMU subscription is ilmu-glm-5.1
-    model_name = os.getenv("ILMU_MODEL", "ilmu-glm-5.1")
-
-    max_retries = 2
-    last_error = None
-
-    for attempt in range(max_retries + 1):
-        try:
-            request_body = {
-                "model": model_name,
-                "temperature": temperature,
-                "max_tokens": 3000,  # Enough for full JSON without truncation
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            }
-
-            response = requests.post(
-                "https://api.ilmu.ai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {ilmu_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-                timeout=90,  # Under Cloudflare's ~100s gateway timeout
-            )
-
-            # Detect HTML error pages (504, 502 from Cloudflare)
-            content_type = response.headers.get("content-type", "")
-            if "text/html" in content_type or response.text.strip().startswith("<!DOCTYPE"):
-                raise requests.exceptions.ConnectionError(
-                    f"ILMU returned HTML error page (HTTP {response.status_code}) — server overloaded, retrying..."
-                )
-
-            # Check if the API returned an error code
-            if not response.ok:
-                error_details = response.text
-                try:
-                    error_details = response.json()
-                except ValueError:
-                    pass
-                raise Exception(f"HTTP {response.status_code}: {error_details}")
-
-            # SUCCESS — parse the response
-            payload = response.json() if response.content else {}
-            choices = payload.get("choices") if isinstance(payload, dict) else None
-            if not isinstance(choices, list) or not choices:
-                raise Exception(f"ILMU text response missing choices: {payload}")
-
-            first_choice = choices[0] if isinstance(choices[0], dict) else {}
-            message = first_choice.get("message") if isinstance(first_choice, dict) else {}
-            content = message.get("content") if isinstance(message, dict) else ""
-            text_output = _extract_model_text(content)
-
-            finish_reason = str(first_choice.get("finish_reason", "")).strip().lower() if isinstance(first_choice, dict) else ""
-            if finish_reason in {"content_filter", "sensitive", "blocked"}:
-                raise Exception(f"ILMU finish_reason={finish_reason}")
-
-            if not text_output and isinstance(message, dict):
-                text_output = _extract_model_text(message.get("reasoning_content"))
-
-            if not text_output and isinstance(first_choice, dict):
-                # Fallback for providers that sometimes return top-level text.
-                text_output = _extract_model_text(first_choice.get("text"))
-
-            if not text_output and isinstance(payload, dict):
-                text_output = _extract_model_text(payload.get("output_text"))
-
-            if not text_output:
-                # Debug: log raw payload to diagnose empty content
-                print(f"[ILMU Empty] finish_reason={finish_reason!r} | raw payload keys={list(payload.keys()) if isinstance(payload, dict) else type(payload)} | message={str(message)[:200]}")
-                raise Exception("ILMU returned empty content in choices[0]")
-
-            return text_output
-
-        except HTTPException:
-            raise  # Don't retry on our own validation errors
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as exc:
-            last_error = exc
-            if attempt < max_retries:
-                import time as _time
-                wait_secs = 3 * (attempt + 1)
-                print(f"[ILMU Retry {attempt+1}/{max_retries}] Timeout/connection error, waiting {wait_secs}s: {exc}")
-                _time.sleep(wait_secs)
-                continue
-        except Exception as exc:
-            last_error = exc
-            exc_str = str(exc).lower()
-            retryable = any(
-                kw in exc_str
-                for kw in [
-                    "504",
-                    "502",
-                    "timeout",
-                    "looping",
-                    "flagged",
-                    "empty content",
-                    "missing choices",
-                    "content_filter",
-                    "blocked",
-                ]
-            )
-            if attempt < max_retries and retryable:
-                import time as _time
-                wait_secs = 3 * (attempt + 1)
-                # Bump temperature on retry to break looping patterns
-                temperature = min(temperature + 0.2, 0.8)
-                print(f"[ILMU Retry {attempt+1}/{max_retries}] Error (will retry with temp={temperature}), waiting {wait_secs}s: {exc}")
-                _time.sleep(wait_secs)
-                continue
-            break
-
-    # All retries exhausted - FALLBACK TO ZHIPU via async invoke (legacy SDK compatible)
-    print(f"[ILMU Failed] Falling back to Zhipu natively due to: {last_error}")
-    try:
-        if isinstance(client, dict):
-            zhipu_client = client.get("client")
-        else:
-            zhipu_client = client
-
-        if not zhipu_client:
-            raise Exception("No Zhipu client available for fallback")
-
-        # Use async invoke which works with legacy SDK 1.0.7
-        combined_prompt = f"System: {system_prompt}\n\nUser: {user_prompt}"
-        response = zhipu_client.model_api.async_invoke(
-            model="glm-5.1",
-            prompt=[{"role": "user", "content": combined_prompt}],
-            temperature=min(temperature, 0.9)
-        )
-        task_id = response.get("data", {}).get("task_id", "")
-        if not task_id:
-            raise Exception(f"Zhipu async_invoke failed - no task_id: {response}")
-
-        # Poll for result
-        import time as _time
-        for _ in range(30):
-            _time.sleep(2)
-            result = zhipu_client.model_api.query_async_invoke_result(task_id)
-            task_status = result.get("data", {}).get("task_status", "")
-            if task_status == "SUCCESS":
-                choices = result.get("data", {}).get("choices", [])
-                raw_text = choices[0].get("content", "") if choices else ""
-                return _extract_model_text(raw_text)
-            elif task_status in ("FAILED", "EXPIRED"):
-                raise Exception(f"Zhipu async task {task_status}: {result}")
-        raise Exception("Zhipu async task timed out after 60 seconds")
-    except Exception as fallback_exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"ILMU failed and Zhipu fallback also failed: {fallback_exc} (Original ILMU error: {last_error})",
-        )
 def _get_previous_month(month_str: str) -> str:
     dt = datetime.strptime(f"{month_str}-01", "%Y-%m-%d")
     if dt.month == 1:
         return f"{dt.year - 1}-12"
     return f"{dt.year:04d}-{dt.month - 1:02d}"
-
 
 def _fetch_diagnostic_patterns(supabase: Client, merchant_id: str, target_month: str) -> Dict[str, Any]:
     res = (
@@ -2341,14 +2126,13 @@ class SynthesisRequest(BaseModel):
 
 @app.post("/boardroom/synthesis")
 def boardroom_synthesis(payload: SynthesisRequest) -> Dict[str, Any]:
-    try:
+    try: # <--- OUTER TRY (Catches DB or Server crashes)
         supabase = get_supabase_client()
         llm_client = get_zhipu_client()
 
         actual_shop_id = _resolve_merchant_id(supabase, payload.merchant_id.strip())
         merchant_profile = _fetch_merchant_profile(supabase, actual_shop_id)
 
-        # The Prompt: Forcing the LLM to output exact JSON for your UI
         ceo_sys = (
             "You are an AI CEO synthesis engine for a Malaysian F&B business. Review the board's debate, financial data, and boss context. "
             "Generate exactly 3 strategic vectors (Aggressive, Hybrid Pivot, Defensive) and comparative metrics.\n\n"
@@ -2385,15 +2169,31 @@ def boardroom_synthesis(payload: SynthesisRequest) -> Dict[str, Any]:
             "Return the JSON."
         )
 
-        raw_json = _call_text_llm(llm_client, ceo_sys, ceo_usr, temperature=0.2)
-        synthesis_data = _parse_model_json(raw_json, source_name="CEO Synthesis", required_kind="object")
+        try: # <--- INNER TRY (Catches LLM glitches)
+            raw_json = _call_text_llm(llm_client, ceo_sys, ceo_usr, temperature=0.2)
+            synthesis_data = _parse_model_json(raw_json, source_name="CEO Synthesis", required_kind="object")
+        except Exception as parse_exc: # <--- INNER EXCEPT
+            print(f"[CEO Synthesis] LLM failed to parse JSON, using safe fallback. Error: {parse_exc}")
+            synthesis_data = {
+                "strategies": [
+                    {"id": "aggressive", "title": "Aggressive Expansion", "description": "Launch a high-impact weekend bundle promo to rapidly acquire new customers and clear excess inventory.", "growth": "+110%", "riskLevel": "HIGH RISK"},
+                    {"id": "hybrid", "title": "Hybrid Pivot", "description": "Adjust operating hours to close 1 hour earlier on slow weekdays, redirecting that budget into localized social ads.", "growth": "+45%", "riskLevel": "OPTIMIZED", "recommended": True},
+                    {"id": "defensive", "title": "Defensive Consolidation", "description": "Trim the menu by removing the bottom 3 underperforming items to simplify kitchen prep and reduce ingredient waste.", "growth": "+10%", "riskLevel": "CONSERVATIVE"}
+                ],
+                "comparativeAnalysis": {
+                    "corePros": {"aggressive": "High volume spike", "hybrid": "Balances margins", "defensive": "Protects cashflow"},
+                    "riskFactors": {"aggressive": "High upfront spend", "hybrid": "Requires monitoring", "defensive": "Loses market share"},
+                    "resourceDrain": {"aggressive": 85, "hybrid": 55, "defensive": 20},
+                    "probabilityOfSuccess": {"aggressive": "35%", "hybrid": "78%", "defensive": "92%"}
+                }
+            }
 
         return {
             "status": "success",
             "data": synthesis_data
         }
 
-    except Exception as exc:
+    except Exception as exc: # <--- OUTER EXCEPT (Now correctly matches the outer TRY)
         print(f"CEO Synthesis Error: {exc}")
         raise HTTPException(status_code=502, detail=f"Synthesis failed: {exc}") from exc
 
@@ -3191,7 +2991,7 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
         # ---------------------------------------------------------
         # 7. CALL LLM 
         # ---------------------------------------------------------
-        engine = "ilmu"
+        engine = "openrouter"
         fallback_reason = ""
         try:
             raw_json_response = _call_text_llm(None, system_prompt, user_prompt, temperature=0.4)

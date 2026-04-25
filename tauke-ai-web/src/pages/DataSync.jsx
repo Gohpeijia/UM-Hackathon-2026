@@ -122,7 +122,7 @@ export default function DataSync() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
               merchant_id: ownerId,
-              report_month: getApiMonth(selectedMonth), // 👈 ADD TRANSLATOR HERE
+              report_month: getApiMonth(selectedMonth), 
               file_data_url: base64Data
           })
       });
