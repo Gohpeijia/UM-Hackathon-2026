@@ -23,6 +23,11 @@ Tauke.AI is an end-to-end intelligence platform designed to help Malaysian Food 
 
 ---
 
+## 🌐 Website URL
+https://tauke-ai.vercel.app/ 
+
+---
+
 ## ⚠️ Important Note: Waking Up the Server
 
 Since our backend API is hosted on Render, the server may automatically go to sleep after a period of inactivity.
@@ -86,7 +91,7 @@ Tauke.AI includes a multi-stage strategy workflow:
 - **Final Synthesis** — the system consolidates those perspectives into a recommended strategic direction
 
 ### 🧪 MiroFish Swarm Simulation (Sandbox)
-Test business ideas before committing real budget. The system simulates whether a promotion or business decision is likely to improve business outcomes based on internal data and external signals.
+Test business ideas safely before committing real budget. Instead of using basic math formulas, our engine builds a hyper-realistic 'digital twin' of your market. The system dynamically generates hundreds of unique AI agents perfectly mapped to your actual customer base distribution. By injecting each agent with randomized personalities, budgets, and behavioral quirks, we create a highly creative, unpredictable simulation. Watch this living digital market react to your new promotions or price changes in real-time, driven by your internal data and live external signals.
 
 ### 🗺️ Dynamic Execution Roadmaps
 Once a strategy is selected, Tauke.AI converts it into an actionable step-by-step roadmap adapted to local conditions and business context.
@@ -115,30 +120,34 @@ A typical user journey in Tauke.AI looks like this:
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as F&B Owner
-    participant F as Frontend (React/Vite)
-    participant B as Backend (Python Agents)
-    participant DB as Supabase (PostgreSQL)
-    participant APIs as External APIs / LLMs
+    actor Owner as F&B Owner
+    participant UI as Frontend (React/Vite)
+    participant API as Backend (FastAPI)
+    participant DB as Supabase
+    participant AI as AI & External APIs
 
-    User->>F: Authenticate & Configure Store
-    F->>DB: Save Store Profile & Sync CSV Data
-    DB-->>F: Confirm Data Sync
-    User->>F: Request Detective Analysis
-    F->>B: Send POS Data & Store Context
-    B->>APIs: Fetch Weather, Local Trends & Analyze Metrics
-    APIs-->>B: Return Context & Calculated Metrics (AOV, UPT)
-    B-->>F: Display Strengths, Weaknesses & Anomalies
-    User->>F: Initiate AI Debate
-    F->>B: Trigger Multi-Agent System
-    B->>APIs: Agents generate, critique, and refine strategies
-    B-->>F: Stream Debate Transcript to Dashboard
-    User->>F: Run Swarm Simulation on Chosen Strategy
-    F->>B: Simulate Campaign Outcomes
-    B-->>F: Return Projected ROI & Success Metrics
-    User->>F: Generate Final Roadmap
-    F->>B: Synthesize Debate & Simulation Data
-    B-->>User: Deliver Step-by-Step Actionable Campaign Roadmap
+    Note over Owner, AI: 📊 MAIN JOURNEY: Core Strategy & Roadmap Flow
+    Owner->>UI: Configures Store Profile & Uploads Sales CSV
+    UI->>API: Sends Data for Ingestion
+    API->>DB: Saves Extracted Data
+    API->>API: Calculates Core Metrics (AOV, Peak Hours, Risers)
+    API-->>UI: Displays Detective Analysis
+    Owner->>UI: Triggers AI Strategy Debate
+    UI->>API: Requests Multi-Agent Review
+    API->>AI: Fetches Context (Weather, Competitors) & Initiates Debate
+    AI-->>API: Returns Marketing vs. Ops Agent Debates
+    API-->>UI: Streams Debate Transcript
+    Owner->>UI: Finalizes the Strategic Direction
+    UI->>API: Synthesizes Data for Action Plan
+    API-->>Owner: Delivers Step-by-Step Campaign Roadmap
+
+    Note over Owner, AI: 🧪 SEPARATE FEATURE: Swarm Simulation Sandbox
+    Owner->>UI: Opens Sandbox (Independent of main strategy flow)
+    Owner->>UI: Inputs a specific promotional idea to "Test-Drive"
+    UI->>API: Requests Scenario Simulation
+    API->>AI: Runs Swarm Simulation against local environment data
+    AI-->>API: Predicts projected ROI, foot traffic, and risk signals
+    API-->>Owner: Displays Simulated Business Outcomes
 ```
 
 
