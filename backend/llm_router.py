@@ -25,6 +25,8 @@ import os
 import time
 import requests
 from typing import Optional
+from dotenv import load_dotenv
+load_dotenv() 
 
 # ---------------------------------------------------------------------------
 # Provider configurations
@@ -69,8 +71,8 @@ PROVIDERS = [
     {
         "name": "Gemini",
         "env_key": "GEMINI_API_KEY",
-        "url": None,  # Built differently — see _call_gemini()
-        "model": "gemini-2.5-flash",         
+        "url": None,  
+        "model":"gemini-2.0-flash",
         "max_tokens": 4000,
         "headers_fn": None,
     },
@@ -79,7 +81,7 @@ PROVIDERS = [
         "env_key": "ILMU_API_KEY",
         "url": "https://api.ilmu.ai/v1/chat/completions",
         "model": os.getenv("ILMU_MODEL"),
-        "max_tokens": 1500,                 
+        "max_tokens":4000,                
         "headers_fn": lambda key: {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -154,7 +156,7 @@ def _call_gemini(
     max_tokens: int,
 ) -> Optional[str]:
     """Call Google Gemini via REST API."""
-    model = os.getenv("GEMINI_MODEL")
+    model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
     payload = {
@@ -163,35 +165,25 @@ def _call_gemini(
         "generationConfig": {
             "temperature": temperature,
             "maxOutputTokens": max_tokens,
+            # KEY CHANGE: Native Gemini REST API uses responseMimeType
+            "responseMimeType": "application/json"
         },
     }
-
-    response = requests.post(url, json=payload, timeout=60)
-
-    if not response.ok:
-        raise Exception(f"Gemini HTTP {response.status_code}: {response.text[:200]}")
-
-    data = response.json()
-
-    # Check for safety blocks
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise Exception("Gemini returned no candidates")
-
-    finish_reason = candidates[0].get("finishReason", "")
-    if finish_reason in ("SAFETY", "RECITATION"):
-        raise Exception(f"Gemini blocked: finishReason={finish_reason}")
-
-    parts = (candidates[0].get("content") or {}).get("parts", [])
-    if not parts:
-        raise Exception("Gemini returned empty parts")
-
-    text = parts[0].get("text", "").strip()
-    if not text:
-        raise Exception("Gemini returned empty text")
-
-    return text
-
+    
+    try:
+        response = requests.post(url, json=payload, timeout=60)
+        response.raise_for_status()
+        
+        data = response.json()
+        # Extract the text string from the candidates array
+        if "candidates" in data and data["candidates"]:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+            
+    except Exception as e:
+        print(f"Error calling Gemini API: {e}")
+        return None
+        
+    return None
 
 # ---------------------------------------------------------------------------
 # Main router

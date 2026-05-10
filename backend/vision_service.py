@@ -2028,6 +2028,7 @@ def simulate_what_if(payload: WhatIfSimulationRequest) -> Dict[str, Any]:
             "2. THE VERDICT: YOU must make the final call (PROCEED or ABORT) based on whether the Profit Boost is worth the risk, NOT just based on conversion rates.\n"
             f"3. THE SWARM: Generate exactly {agent_count} virtual customer agents inside the 'agents' array. Give them unique traits and logic.\n"
             "4. OUTPUT FORMAT: Return ONLY pure JSON. NO markdown, NO text outside the JSON.\n\n"
+            "CRITICAL: Do NOT wrap the JSON in ```json code fences. Do NOT say 'Here is your JSON'. Output absolutely nothing except the raw opening { and closing }."
             "JSON SCHEMA REQUIREMENT:\n"
             "{\n"
             "  \"financial_analysis\": {\n"
@@ -2765,13 +2766,12 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
             simulation_data["financial_analysis"] = financials
 
         # ---------------------------------------------------------
-        # 8. UNPACK COHORTS INTO REALISTIC INDIVIDUAL AGENTS
+        # 8. UNPACK COHORTS INTO REALISTIC INDIVIDUAL AGENTS (CORRECTED)
         # ---------------------------------------------------------
         swarm_behavior = simulation_data.get("swarm_behavior", [])
         if not isinstance(swarm_behavior, list):
             swarm_behavior = []
 
-        # Map LLM results by cohort name for easy lookup
         cohort_results = {
             str(c.get("cohort", "")).lower().strip(): c 
             for c in swarm_behavior if isinstance(c, dict)
@@ -2779,6 +2779,7 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
 
         synthetic_agents = []
         agent_id = 1
+        total_buy = 0
 
         for cohort in micro_cohorts:
             cohort_name = cohort["cohort"]
@@ -2786,93 +2787,91 @@ def run_swarm_simulation(payload: SwarmSimulationRequest):
             count = cohort["headcount"]
 
             llm_eval = cohort_results.get(cohort_name.lower().strip(), {})
-            
             base_decision = str(llm_eval.get("decision", "pass")).strip().lower()
-            if base_decision not in ["buy", "pass"]:
-                base_decision = "pass"
-                
             base_reason = llm_eval.get("reaction", f"Reacting based on {cohort['trait']}")
 
-            for i in range(count):
-                decision = base_decision
+            # Define base probability depending on LLM cohort sentiment
+            base_prob = 0.85 if base_decision == "buy" else 0.15
 
-                # MICRO VARIATION: Even within a cohort, people are unpredictable
-                if decision == "buy" and i % 7 == 0:
-                    decision = "pass"
-                elif decision == "pass" and i % 5 == 0:
-                    decision = "buy"
+            for _ in range(count):
+                # FIX 1: Use true probability instead of fixed modulo arithmetic
+                # Introduces natural, realistic variance across runs
+                actual_prob = max(0.05, min(0.95, random.gauss(base_prob, 0.10)))
+                is_buyer = random.random() < actual_prob
+                
+                decision = "buy" if is_buyer else "pass"
+                if is_buyer:
+                    total_buy += 1
+
+                # FIX 2: Slightly vary the reason strings so the UI feed feels organic
+                variations = [
+                    base_reason,
+                    f"Considers the offer: {base_reason.lower()}",
+                    f"Based on current needs: {base_reason.lower()}",
+                    base_reason
+                ]
 
                 synthetic_agents.append({
                     "id": agent_id,
-                    "segment": segment,      # e.g., "Students"
-                    "role": cohort_name,     # e.g., "Broke Student"
-                    "trait": cohort["trait"],# e.g., "Very price sensitive"
+                    "segment": segment,
+                    "role": cohort_name,
+                    "trait": cohort["trait"],
                     "decision": decision,
-                    "reason": base_reason
+                    "reason": random.choice(variations)
                 })
                 agent_id += 1
 
-        # Shuffle so the Live Agent Feed UI looks like a natural stream of people
         random.shuffle(synthetic_agents)
-
-        total_buy = sum(1 for a in synthetic_agents if a["decision"] == "buy")
         total_pass = len(synthetic_agents) - total_buy
 
+        # ---------------------------------------------------------
+        # 9. DYNAMIC PROFIT INTEGRATION (CORRECTED)
+        # ---------------------------------------------------------
         financials = simulation_data.get("financial_analysis", {})
         
-        # We assume standard cafe metrics if the LLM didn't provide specific costs
-        upfront_cost = float(financials.get("estimated_upfront_cost", 0.0))
-        new_aov = float(financials.get("estimated_new_aov", 18.00))
-
-        base_aov = 18.00
-        base_conversion_rate = 0.30 
-
-        # 🚨 THE NEW DYNAMIC MARGIN CALCULATOR 🚨
-        current_rev = float(slim_fin.get("rev", 0.0))
-        current_cogs = float(slim_fin.get("cogs", 0.0))
-        
-        if current_rev > 0 and current_cogs > 0:
-            # Formula: (Revenue - Ingredient Costs) / Revenue
-            profit_margin = (current_rev - current_cogs) / current_rev
-            # Cap it between 10% and 80% to prevent extreme data anomalies ruining the math
-            profit_margin = max(0.10, min(profit_margin, 0.80)) 
-        else:
-            profit_margin = 0.40 # Fallback if they haven't uploaded invoices yet
-
- # ── Profit Math ────────────────────────────────────────────
         real_monthly_profit  = float(slim_fin.get("profit", 0.0))
-        real_monthly_revenue = float(slim_fin.get("rev",    0.0))
-        real_cogs            = float(slim_fin.get("cogs",   0.0))
+        real_monthly_revenue = float(slim_fin.get("rev", 0.0))
+        real_cogs            = float(slim_fin.get("cogs", 0.0))
 
-        # Dynamic profit margin from real data (capped 10-80%)
-        if real_monthly_revenue > 0 and real_cogs > 0:
-            profit_margin = max(0.10, min((real_monthly_revenue - real_cogs) / real_monthly_revenue, 0.80))
-        else:
-            profit_margin = 0.40  # Sensible café default
-
-        total_agents   = max(len(synthetic_agents), 1)
-        buy_rate       = total_buy / total_agents
-        baseline_buyers = int(total_agents * 0.30)  # 30% baseline conversion
-
-        # Baseline: use real profit if available, else estimate from agents
+        # Establish baseline profit
         if real_monthly_profit != 0:
             baseline_profit = real_monthly_profit
         else:
-            baseline_profit = round(baseline_buyers * base_aov * profit_margin, 2)
+            profit_margin = 0.40
+            if real_monthly_revenue > 0 and real_cogs > 0:
+                profit_margin = max(0.10, min((real_monthly_revenue - real_cogs) / real_monthly_revenue, 0.80))
+            baseline_profit = round((len(synthetic_agents) * 0.30) * 18.00 * profit_margin, 2)
 
-        # Projected: scale from baseline using buy rate delta vs 30% baseline
-        buy_rate_delta      = buy_rate - 0.30          # e.g. 0.75 - 0.30 = +0.45
-        projected_net_profit = round(baseline_profit * (1 + buy_rate_delta * 1.5), 2)
-        true_profit_boost    = round(projected_net_profit - baseline_profit, 2)
+        # FIX 3: Respect the LLM's projected profit, but blend it safely with the actual swarm buy rate
+        llm_projected_profit = _to_float(financials.get("projected_new_profit"), 0.0)
+        
+        total_agents = max(len(synthetic_agents), 1)
+        buy_rate = total_buy / total_agents
+        buy_rate_delta = buy_rate - 0.30
+
+        # Calculate a mathematically grounded profit, then average it with the LLM's creative estimate
+        calculated_net_profit = baseline_profit * (1 + buy_rate_delta * 1.5)
+        
+        if llm_projected_profit != 0:
+            # Blends 60% mathematical grounding with 40% LLM variance
+            projected_net_profit = round((calculated_net_profit * 0.6) + (llm_projected_profit * 0.4), 2)
+        else:
+            projected_net_profit = round(calculated_net_profit, 2)
+
+        true_profit_boost = round(projected_net_profit - baseline_profit, 2)
         llm_verdict = str(financials.get("final_verdict", "")).strip().upper()
 
-        if llm_verdict == "AVOID" and true_profit_boost > 0:
-            true_profit_boost = round(true_profit_boost * -1, 2)  # Flip to negative
-            projected_net_profit = round(baseline_profit + true_profit_boost, 2)
+        # Hard guardrails
+        if true_profit_boost < 0:
+            llm_verdict = "AVOID"
+        elif true_profit_boost >= 0 and llm_verdict == "AVOID":
+            # If agents bought heavily, override an accidental negative text verdict
+            llm_verdict = "PROCEED"
 
         financials["baseline_estimated_profit"] = baseline_profit
-        financials["projected_new_profit"] = projected_net_profit
-        financials["profit_boost"] = true_profit_boost
+        financials["projected_new_profit"]      = projected_net_profit
+        financials["profit_boost"]              = true_profit_boost
+        financials["final_verdict"]             = llm_verdict
         simulation_data["financial_analysis"]   = financials
 
         # ── Response ───────────────────────────────────────────────

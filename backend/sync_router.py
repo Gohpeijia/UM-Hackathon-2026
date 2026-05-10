@@ -12,7 +12,7 @@ from helpers import get_zhipu_api_key, _extract_model_text, _parse_model_json
 # ATTEMPT 2: GEMINI
 # ---------------------------------------------------------
 def _call_gemini_vision(image_data_url: str, prompt: str) -> Any:
-    """Fallback 1: Google Gemini 2.5 Flash."""
+    """Fallback 1: Google Gemini 2.0 Flash."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise Exception("Missing GEMINI_API_KEY in .env")
@@ -20,7 +20,7 @@ def _call_gemini_vision(image_data_url: str, prompt: str) -> Any:
     header, encoded = image_data_url.split(",", 1)
     mime_type = header[5:].split(";")[0]
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
 
     payload = {
         "system_instruction": {"parts": [{"text": "You are a precise financial data extractor. Output ONLY pure JSON."}]},
@@ -89,7 +89,7 @@ def run_sync_router(image_data_url: str, prompt: str) -> Any:
     """
     Sync Router: 
     1. Tries Zhipu AI (GLM-4.6v-flash)
-    2. Falls back to Gemini 2.5 Flash
+    2. Falls back to Gemini 2.0 Flash
     3. Falls back to OpenRouter (Qwen)
     """
     api_key = get_zhipu_api_key()

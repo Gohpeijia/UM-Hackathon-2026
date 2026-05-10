@@ -483,12 +483,21 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
   const totalPass = Number(stats.total_pass) || 0;
   const buyRatePercent = Number(stats.buy_rate_pct)         
   || (totalAgents > 0 ? Math.round((totalBuy / totalAgents) * 100) : 0);
-  const rawVerdict = String(financials.final_verdict || '').trim().toUpperCase();
-  const verdict = (rawVerdict === 'ABORT' || rawVerdict === 'AVOID') ? 'ABORT' : 'PROCEED';
+
+// 1. Extract financial numbers first so we can evaluate the true outcome
+  const baselineProfit = Number(financials.baseline_estimated_profit) || 0;
+  const projectedProfit = Number(financials.projected_new_profit) || 0;
+  const profitBoost = Number(financials.profit_boost) || (projectedProfit - baselineProfit);
+
+  // 2. --- STRICT DYNAMIC VERDICT LOGIC ---
+  // Trust the math: If the scenario loses money compared to baseline, force ABORT. 
+  // If it breaks even or makes a profit, set to PROCEED.
+  const verdict = profitBoost >= 0 ? 'PROCEED' : 'ABORT';
+
   const isAbortVerdict = verdict === 'ABORT';
   const verdictClass = verdict === 'ABORT' ? 'text-red' : 'text-green';
   const verdictStroke = verdict === 'ABORT' ? '#ef4444' : 'var(--green-600)';
-
+  
   const roadmapHeaderTitle = isAbortVerdict
     ? "Don't worry - we can pivot this idea."
     : 'Turn this into an executable roadmap.';
@@ -497,10 +506,6 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
     : 'Generate a complete step-by-step plan directly from this simulation insight.';
   const roadmapButtonLabel = isAbortVerdict ? 'Generate Safer Roadmap' : 'Generate Roadmap';
   const roadmapButtonLoadingLabel = isAbortVerdict ? 'Building safer roadmap...' : 'Generating...';
-
-  const baselineProfit = Number(financials.baseline_estimated_profit) || 0;
-  const projectedProfit = Number(financials.projected_new_profit) || 0;
-  const profitBoost = Number(financials.profit_boost) || projectedProfit - baselineProfit;
 
   const canHandleTraffic = operations.can_handle_traffic === true;
   const operationalRisk = operations.bottleneck_risk || 'Unknown';
@@ -515,8 +520,6 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
       title: item.cohort || item.segment || `Segment ${index + 1}`,
       desc: item.reaction || item.churn_risk || 'No reasoning returned.'
     }));
-
-  // Don't pad with fake segments — if the LLM returned fewer, show fewer
 
   const profitDeltaPercent = baselineProfit === 0
     ? 0
@@ -715,7 +718,6 @@ const ResultsPage = ({ scenario, simulationResult, onRunAnother }) => {
               </motion.div>
             </div>
 
-            {/* 👇 PASTE THIS NEW LIVE AGENT FEED HERE 👇 */}
             <div style={{ marginTop: '24px', backgroundColor: '#ffffff', borderRadius: '16px', border: '1px solid var(--slate-100)', overflow: 'hidden' }}>
               <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--slate-100)', backgroundColor: '#f8fafc' }}>
                 <h4 style={{ margin: 0, fontSize: '0.9rem', fontWeight: 700, color: 'var(--slate-900)' }}>
